@@ -25,65 +25,18 @@
 | 빌드 | tsup (ESM) |
 | 테스트 | vitest |
 
-## 셋업 가이드
-
-### 1. Discord Bot 생성
-
-1. [Discord Developer Portal](https://discord.com/developers/applications) 접속, 로그인
-2. **"New Application"** 클릭 → 이름 입력 → Create
-3. 왼쪽 **"Bot"** 메뉴 클릭
-4. **"Reset Token"** 클릭 → 토큰 복사 (이것이 `DISCORD_BOT_TOKEN`)
-5. 아래로 스크롤, **Privileged Gateway Intents** 3개 전부 켜기:
-   - Presence Intent
-   - Server Members Intent
-   - **Message Content Intent** (필수!)
-6. Save Changes
-
-### 2. 봇을 서버에 초대
-
-1. 왼쪽 **"OAuth2"** 메뉴 클릭
-2. **OAuth2 URL Generator** 섹션:
-   - Scopes: `bot`, `applications.commands` 체크
-   - Bot Permissions: `Send Messages`, `Manage Channels`, `Read Message History`, `Embed Links`, `Use Slash Commands` 체크
-3. 생성된 URL을 브라우저에서 열기 → 서버 선택 → 초대
-
-### 3. ID 수집
-
-Discord 앱에서 **설정 → 고급 → 개발자 모드** 켜기.
-
-- **서버 ID**: 서버 아이콘 우클릭 → "서버 ID 복사"
-- **내 유저 ID**: 자기 이름 우클릭 → "사용자 ID 복사"
-
-### 4. 환경변수 설정
-
-`.env.example`을 `.env`로 복사 후 값 채우기:
+## 설치
 
 ```bash
-cp .env.example .env
-```
-
-```env
-DISCORD_BOT_TOKEN=봇_토큰_여기에
-DISCORD_GUILD_ID=서버_ID_여기에
-ALLOWED_USER_IDS=내_유저_ID_여기에
-BASE_PROJECT_DIR=/Users/me/projects
-RATE_LIMIT_PER_MINUTE=10
-```
-
-| 변수 | 설명 | 필수 |
-|------|------|------|
-| `DISCORD_BOT_TOKEN` | 봇 인증 토큰 | ✅ |
-| `DISCORD_GUILD_ID` | Discord 서버 ID | ✅ |
-| `ALLOWED_USER_IDS` | 허용할 유저 ID (쉼표 구분) | ✅ |
-| `BASE_PROJECT_DIR` | 프로젝트 폴더 기본 경로 | ✅ |
-| `RATE_LIMIT_PER_MINUTE` | 분당 요청 제한 (기본값 10) | |
-
-### 5. 설치 및 실행
-
-```bash
+git clone git@github.com:chadingTV/claudecode-discord.git
+cd claudecode-discord
 npm install
+cp .env.example .env   # 환경변수 설정 후
 npm run dev
 ```
+
+Discord 봇 생성, 환경변수 상세 설정, Windows(WSL) 환경 안내, Claude Code 설치 방법 등
+전체 셋업 과정은 **[SETUP.md](SETUP.md)** 를 참고하세요.
 
 ## 사용법
 
@@ -94,6 +47,7 @@ npm run dev
 | `/status` | 전체 세션 상태 확인 | |
 | `/stop` | 현재 채널 세션 중지 | |
 | `/auto-approve on\|off` | 자동 승인 토글 | `/auto-approve on` |
+| `/sessions` | 기존 세션 목록 조회 및 재개 | |
 
 등록된 채널에 **일반 메시지**를 보내면 Claude가 응답합니다.
 
