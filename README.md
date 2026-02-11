@@ -97,6 +97,9 @@ claudecode-discord/
 | `/sessions` | List sessions to resume or delete | |
 | `/clear-sessions` | Delete all session files for the project | |
 
+The `/register` path is resolved relative to the `BASE_PROJECT_DIR` set in your `.env` file.
+For example, if `BASE_PROJECT_DIR=/Users/you/projects`, then `/register my-project` maps to `/Users/you/projects/my-project`. Absolute paths also work: `/register path:/Users/you/other/project`.
+
 Send a **regular message** in a registered channel and Claude will respond.
 Attach images, documents, or code files and Claude can read and analyze them.
 
