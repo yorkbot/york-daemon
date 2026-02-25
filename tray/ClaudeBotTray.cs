@@ -88,7 +88,7 @@ class ClaudeBotTray : Form
         {
             var proc = new Process();
             proc.StartInfo.FileName = "wmic";
-            proc.StartInfo.Arguments = $"process where processid={pid} get commandline /format:list";
+            proc.StartInfo.Arguments = "process where processid=" + pid + " get commandline /format:list";
             proc.StartInfo.UseShellExecute = false;
             proc.StartInfo.RedirectStandardOutput = true;
             proc.StartInfo.CreateNoWindow = true;
@@ -104,7 +104,7 @@ class ClaudeBotTray : Form
     {
         try
         {
-            return RunCmdOutput("git", $"-C \"{botDir}\" describe --tags --always").Trim();
+            return RunCmdOutput("git", "-C \"" + botDir + "\" describe --tags --always").Trim();
         }
         catch { return "unknown"; }
     }
@@ -113,9 +113,9 @@ class ClaudeBotTray : Form
     {
         try
         {
-            RunCmdOutput("git", $"-C \"{botDir}\" fetch origin main");
-            string local = RunCmdOutput("git", $"-C \"{botDir}\" rev-parse HEAD").Trim();
-            string remote = RunCmdOutput("git", $"-C \"{botDir}\" rev-parse origin/main").Trim();
+            RunCmdOutput("git", "-C \"" + botDir + "\" fetch origin main");
+            string local = RunCmdOutput("git", "-C \"" + botDir + "\" rev-parse HEAD").Trim();
+            string remote = RunCmdOutput("git", "-C \"" + botDir + "\" rev-parse origin/main").Trim();
             updateAvailable = !string.IsNullOrEmpty(local) && !string.IsNullOrEmpty(remote) && local != remote;
         }
         catch { updateAvailable = false; }
@@ -134,23 +134,23 @@ class ClaudeBotTray : Form
         bool wasRunning = IsRunning();
         if (wasRunning)
         {
-            RunCmd($"\"{Path.Combine(botDir, "win-start.bat")}\" --stop", true);
+            RunCmd("\"" + Path.Combine(botDir, "win-start.bat") + "\" --stop", true);
             Thread.Sleep(2000);
         }
 
-        RunCmdOutput("git", $"-C \"{botDir}\" pull origin main");
-        RunCmd($"cd /d \"{botDir}\" && npm install --production && npm run build", true);
+        RunCmdOutput("git", "-C \"" + botDir + "\" pull origin main");
+        RunCmd("cd /d \"" + botDir + "\" && npm install --production && npm run build", true);
 
         currentVersion = GetVersion();
         updateAvailable = false;
 
         if (wasRunning)
         {
-            RunCmd($"\"{Path.Combine(botDir, "win-start.bat")}\"", false);
+            RunCmd("\"" + Path.Combine(botDir, "win-start.bat") + "\"", false);
             Thread.Sleep(2000);
         }
 
-        MessageBox.Show($"Updated to version: {currentVersion}", "Update Complete", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        MessageBox.Show("Updated to version: " + currentVersion, "Update Complete", MessageBoxButtons.OK, MessageBoxIcon.Information);
         UpdateStatus();
         BuildMenu();
     }
@@ -216,14 +216,14 @@ class ClaudeBotTray : Form
 
         if (!hasEnv)
         {
-            var noEnv = new ToolStripMenuItem("⚙️ Setup Required") { Enabled = false };
+            var noEnv = new ToolStripMenuItem("Setup Required") { Enabled = false };
             menu.Items.Add(noEnv);
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add("Setup...", null, OpenSettings);
         }
         else
         {
-            var status = new ToolStripMenuItem(running ? "🟢 Running" : "🔴 Stopped") { Enabled = false };
+            var status = new ToolStripMenuItem(running ? "Running" : "Stopped") { Enabled = false };
             menu.Items.Add(status);
             menu.Items.Add(new ToolStripSeparator());
 
@@ -251,12 +251,12 @@ class ClaudeBotTray : Form
         autoStartItem.Click += ToggleAutoStart;
         menu.Items.Add(autoStartItem);
 
-        var versionItem = new ToolStripMenuItem($"Version: {currentVersion}") { Enabled = false };
+        var versionItem = new ToolStripMenuItem("Version: " + currentVersion) { Enabled = false };
         menu.Items.Add(versionItem);
 
         if (updateAvailable)
         {
-            menu.Items.Add("⬆️ Update Available", null, PerformUpdate);
+            menu.Items.Add("Update Available", null, PerformUpdate);
         }
 
         menu.Items.Add(new ToolStripSeparator());
@@ -267,7 +267,7 @@ class ClaudeBotTray : Form
 
     private void StartBot(object sender, EventArgs e)
     {
-        RunCmd($"\"{Path.Combine(botDir, "win-start.bat")}\"", false);
+        RunCmd("\"" + Path.Combine(botDir, "win-start.bat") + "\"", false);
         Thread.Sleep(2000);
         UpdateStatus();
         BuildMenu();
@@ -279,7 +279,7 @@ class ClaudeBotTray : Form
         {
             var proc = new Process();
             proc.StartInfo.FileName = "schtasks";
-            proc.StartInfo.Arguments = $"/query /tn \"{taskName}\"";
+            proc.StartInfo.Arguments = "/query /tn \"" + taskName + "\"";
             proc.StartInfo.UseShellExecute = false;
             proc.StartInfo.RedirectStandardOutput = true;
             proc.StartInfo.CreateNoWindow = true;
@@ -294,19 +294,19 @@ class ClaudeBotTray : Form
     {
         if (IsAutoStartEnabled())
         {
-            RunCmd($"schtasks /delete /tn \"{taskName}\" /f", true);
+            RunCmd("schtasks /delete /tn \"" + taskName + "\" /f", true);
         }
         else
         {
             string batPath = Path.Combine(botDir, "win-start.bat");
-            RunCmd($"schtasks /create /tn \"{taskName}\" /tr \"\\\"{batPath}\\\" --fg\" /sc onlogon /rl highest /f", true);
+            RunCmd("schtasks /create /tn \"" + taskName + "\" /tr \"\\\"" + batPath + "\\\" --fg\" /sc onlogon /rl highest /f", true);
         }
         BuildMenu();
     }
 
     private void StopBot(object sender, EventArgs e)
     {
-        RunCmd($"\"{Path.Combine(botDir, "win-start.bat")}\" --stop", true);
+        RunCmd("\"" + Path.Combine(botDir, "win-start.bat") + "\" --stop", true);
         Thread.Sleep(1000);
         UpdateStatus();
         BuildMenu();
@@ -314,9 +314,9 @@ class ClaudeBotTray : Form
 
     private void RestartBot(object sender, EventArgs e)
     {
-        RunCmd($"\"{Path.Combine(botDir, "win-start.bat")}\" --stop", true);
+        RunCmd("\"" + Path.Combine(botDir, "win-start.bat") + "\" --stop", true);
         Thread.Sleep(2000);
-        RunCmd($"\"{Path.Combine(botDir, "win-start.bat")}\"", false);
+        RunCmd("\"" + Path.Combine(botDir, "win-start.bat") + "\"", false);
         Thread.Sleep(2000);
         UpdateStatus();
         BuildMenu();
@@ -350,7 +350,7 @@ class ClaudeBotTray : Form
         };
 
         // Setup guide link
-        var linkLabel = new LinkLabel() { Text = "📖 Open Setup Guide", Left = 15, Top = 10, Width = 450 };
+        var linkLabel = new LinkLabel() { Text = "Open Setup Guide", Left = 15, Top = 10, Width = 450 };
         linkLabel.LinkClicked += (s, ev) => { Process.Start("https://github.com/chadingTV/claudecode-discord/blob/main/SETUP.md"); };
         form.Controls.Add(linkLabel);
 
@@ -409,7 +409,7 @@ class ClaudeBotTray : Form
                 {
                     tb.HandleCreated += (s2, e2) => {
                         SendMessage(((TextBox)s2).Handle, EM_SETCUEBANNER, IntPtr.Zero,
-                            "••••" + val.Substring(val.Length - 6) + " (enter full token to change)");
+                            "****" + val.Substring(val.Length - 6) + " (enter full token to change)");
                     };
                 }
                 else
@@ -457,7 +457,7 @@ class ClaudeBotTray : Form
                 {
                     if (fields[i][0] == "SHOW_COST")
                         sw.WriteLine("# Show estimated API cost in task results (set false for Max plan users)");
-                    sw.WriteLine($"{fields[i][0]}={values[i]}");
+                    sw.WriteLine(fields[i][0] + "=" + values[i]);
                 }
             }
 
@@ -498,7 +498,7 @@ class ClaudeBotTray : Form
     {
         if (IsRunning())
         {
-            RunCmd($"\"{Path.Combine(botDir, "win-start.bat")}\" --stop", true);
+            RunCmd("\"" + Path.Combine(botDir, "win-start.bat") + "\" --stop", true);
         }
         trayIcon.Visible = false;
         Application.Exit();
@@ -508,7 +508,7 @@ class ClaudeBotTray : Form
     {
         var proc = new Process();
         proc.StartInfo.FileName = "cmd.exe";
-        proc.StartInfo.Arguments = $"/c {command}";
+        proc.StartInfo.Arguments = "/c " + command;
         proc.StartInfo.UseShellExecute = false;
         proc.StartInfo.CreateNoWindow = true;
         proc.Start();
