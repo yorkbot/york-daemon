@@ -284,6 +284,22 @@ def _load_env():
     return env
 
 
+def is_autostart_enabled():
+    result = subprocess.run(
+        ["systemctl", "--user", "is-enabled", SERVICE_NAME],
+        capture_output=True, text=True
+    )
+    return result.stdout.strip() == "enabled"
+
+
+def toggle_autostart(icon, item):
+    if is_autostart_enabled():
+        subprocess.run(["systemctl", "--user", "disable", SERVICE_NAME], capture_output=True)
+    else:
+        subprocess.run(["systemctl", "--user", "enable", SERVICE_NAME], capture_output=True)
+    icon.menu = create_menu()
+
+
 def quit_all(icon, item):
     if is_running():
         subprocess.run(["systemctl", "--user", "stop", SERVICE_NAME], capture_output=True)
@@ -303,6 +319,7 @@ def create_menu():
 
     version_item = pystray.MenuItem(f"Version: {current_version}", None, enabled=False)
     update_item = pystray.MenuItem("⬆️ Update Available", perform_update, visible=update_available)
+    autostart_item = pystray.MenuItem("Start at Login", toggle_autostart, checked=lambda item: is_autostart_enabled())
 
     if not has_env:
         return pystray.Menu(
@@ -310,6 +327,7 @@ def create_menu():
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Setup...", edit_settings),
             pystray.Menu.SEPARATOR,
+            autostart_item,
             version_item,
             update_item,
             pystray.Menu.SEPARATOR,
@@ -327,6 +345,7 @@ def create_menu():
             pystray.MenuItem("View Log", open_log),
             pystray.MenuItem("Open Folder", open_folder),
             pystray.Menu.SEPARATOR,
+            autostart_item,
             version_item,
             update_item,
             pystray.Menu.SEPARATOR,
@@ -342,6 +361,7 @@ def create_menu():
             pystray.MenuItem("View Log", open_log),
             pystray.MenuItem("Open Folder", open_folder),
             pystray.Menu.SEPARATOR,
+            autostart_item,
             version_item,
             update_item,
             pystray.Menu.SEPARATOR,

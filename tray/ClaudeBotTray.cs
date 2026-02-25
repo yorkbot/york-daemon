@@ -240,6 +240,12 @@ class ClaudeBotTray : Form
 
         menu.Items.Add(new ToolStripSeparator());
 
+        // Auto-start toggle
+        var autoStartItem = new ToolStripMenuItem("Start at Login");
+        autoStartItem.Checked = IsAutoStartEnabled();
+        autoStartItem.Click += ToggleAutoStart;
+        menu.Items.Add(autoStartItem);
+
         var versionItem = new ToolStripMenuItem($"Version: {currentVersion}") { Enabled = false };
         menu.Items.Add(versionItem);
 
@@ -259,6 +265,37 @@ class ClaudeBotTray : Form
         RunCmd($"\"{Path.Combine(botDir, "win-start.bat")}\"", false);
         Thread.Sleep(2000);
         UpdateStatus();
+        BuildMenu();
+    }
+
+    private bool IsAutoStartEnabled()
+    {
+        try
+        {
+            var proc = new Process();
+            proc.StartInfo.FileName = "schtasks";
+            proc.StartInfo.Arguments = $"/query /tn \"{taskName}\"";
+            proc.StartInfo.UseShellExecute = false;
+            proc.StartInfo.RedirectStandardOutput = true;
+            proc.StartInfo.CreateNoWindow = true;
+            proc.Start();
+            proc.WaitForExit();
+            return proc.ExitCode == 0;
+        }
+        catch { return false; }
+    }
+
+    private void ToggleAutoStart(object sender, EventArgs e)
+    {
+        if (IsAutoStartEnabled())
+        {
+            RunCmd($"schtasks /delete /tn \"{taskName}\" /f", true);
+        }
+        else
+        {
+            string batPath = Path.Combine(botDir, "win-start.bat");
+            RunCmd($"schtasks /create /tn \"{taskName}\" /tr \"\\\"{batPath}\\\" --fg\" /sc onlogon /rl highest /f", true);
+        }
         BuildMenu();
     }
 

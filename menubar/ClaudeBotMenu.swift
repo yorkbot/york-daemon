@@ -174,6 +174,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(NSMenuItem.separator())
 
+        // Auto-start toggle
+        let autoStartItem = NSMenuItem(title: "Start at Login", action: #selector(toggleAutoStart), keyEquivalent: "")
+        autoStartItem.target = self
+        autoStartItem.state = FileManager.default.fileExists(atPath: plistDst) ? .on : .off
+        menu.addItem(autoStartItem)
+
         // Version & update
         let versionItem = NSMenuItem(title: "Version: \(currentVersion)", action: nil, keyEquivalent: "")
         versionItem.isEnabled = false
@@ -361,6 +367,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 field.stringValue = url.path
             }
         }
+    }
+
+    @objc private func toggleAutoStart() {
+        let plistSrc = "\(botDir)/com.claude-discord.plist"
+        if FileManager.default.fileExists(atPath: plistDst) {
+            // Disable auto-start
+            runShell("launchctl unload '\(plistDst)' 2>/dev/null")
+            try? FileManager.default.removeItem(atPath: plistDst)
+        } else {
+            // Enable auto-start
+            runShell("cp '\(plistSrc)' '\(plistDst)' && launchctl load '\(plistDst)'")
+        }
+        buildMenu()
     }
 
     // MARK: - Bot Controls
