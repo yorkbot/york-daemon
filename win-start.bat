@@ -123,7 +123,7 @@ if "%~1"=="--fg" (
     if not "!LOCAL!"=="!REMOTE!" (
         if not "!LOCAL!"=="" (
             if not "!REMOTE!"=="" (
-                echo [claude-bot] 업데이트가 있습니다 (트레이에서 업데이트 가능^)
+                echo [claude-bot] 업데이트가 있습니다 ^(트레이에서 업데이트 가능^)
             )
         )
     ) else (
@@ -162,7 +162,7 @@ for /f %%i in ('git rev-parse origin/main 2^>nul') do set "REMOTE=%%i"
 if not "!LOCAL!"=="!REMOTE!" (
     if not "!LOCAL!"=="" (
         if not "!REMOTE!"=="" (
-            echo [claude-bot] 업데이트가 있습니다 (트레이에서 업데이트 가능^)
+            echo [claude-bot] 업데이트가 있습니다 ^(트레이에서 업데이트 가능^)
         )
     )
 ) else (
