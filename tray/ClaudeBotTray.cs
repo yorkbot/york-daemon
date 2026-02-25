@@ -66,13 +66,35 @@ class ClaudeBotTray : Form
     {
         try
         {
+            // Use tasklist to check if a node process with "ClaudeDiscordBot" window title exists
+            var proc = new Process();
+            proc.StartInfo.FileName = "cmd.exe";
+            proc.StartInfo.Arguments = "/c tasklist /fi \"windowtitle eq ClaudeDiscordBot\" /fo csv /nh 2>nul";
+            proc.StartInfo.UseShellExecute = false;
+            proc.StartInfo.RedirectStandardOutput = true;
+            proc.StartInfo.CreateNoWindow = true;
+            proc.Start();
+            string output = proc.StandardOutput.ReadToEnd();
+            proc.WaitForExit();
+            if (output.Contains("node"))
+                return true;
+
+            // Fallback: check wmic for dist/index.js or dist\\index.js
             var procs = Process.GetProcessesByName("node");
             foreach (var p in procs)
             {
                 try
                 {
-                    string cmd = GetCommandLine(p.Id);
-                    if (cmd != null && cmd.Contains("dist/index.js"))
+                    var wmicProc = new Process();
+                    wmicProc.StartInfo.FileName = "wmic";
+                    wmicProc.StartInfo.Arguments = "process where processid=" + p.Id + " get commandline /format:list";
+                    wmicProc.StartInfo.UseShellExecute = false;
+                    wmicProc.StartInfo.RedirectStandardOutput = true;
+                    wmicProc.StartInfo.CreateNoWindow = true;
+                    wmicProc.Start();
+                    string cmd = wmicProc.StandardOutput.ReadToEnd();
+                    wmicProc.WaitForExit();
+                    if (cmd != null && (cmd.Contains("dist/index.js") || cmd.Contains("dist\\index.js")))
                         return true;
                 }
                 catch { }
@@ -80,24 +102,6 @@ class ClaudeBotTray : Form
         }
         catch { }
         return false;
-    }
-
-    private string GetCommandLine(int pid)
-    {
-        try
-        {
-            var proc = new Process();
-            proc.StartInfo.FileName = "wmic";
-            proc.StartInfo.Arguments = "process where processid=" + pid + " get commandline /format:list";
-            proc.StartInfo.UseShellExecute = false;
-            proc.StartInfo.RedirectStandardOutput = true;
-            proc.StartInfo.CreateNoWindow = true;
-            proc.Start();
-            string output = proc.StandardOutput.ReadToEnd();
-            proc.WaitForExit();
-            return output;
-        }
-        catch { return null; }
     }
 
     private string GetVersion()
