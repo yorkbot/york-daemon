@@ -84,10 +84,10 @@ class ClaudeBotTray : Form
 
         if (!IsEnvConfigured())
         {
-            // .env 없거나 설정 안 됐으면 설정 창 열기
+            // .env 없거나 설정 안 됐으면 패널 열기 (패널에서 설정 버튼 제공)
             System.Windows.Forms.Timer t = new System.Windows.Forms.Timer();
             t.Interval = 500;
-            t.Tick += (s, e) => { t.Stop(); OpenSettings(null, null); };
+            t.Tick += (s, e) => { t.Stop(); ShowControlPanel(); };
             t.Start();
         }
         else if (!IsRunning())
