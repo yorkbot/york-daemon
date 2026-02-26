@@ -42,6 +42,36 @@ if [ "$1" = "--stop" ]; then
     exit 0
 fi
 
+# --regen-service: systemd service 파일만 재생성
+if [ "$1" = "--regen-service" ]; then
+    mkdir -p "$HOME/.config/systemd/user"
+    cat > "$SERVICE_FILE" << EOF
+[Unit]
+Description=Claude Discord Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=$SCRIPT_DIR
+Environment=HOME=$HOME
+Environment=PATH=$(dirname "$NODE_BIN"):$PATH
+Environment=NODE_PATH=$(dirname "$NODE_BIN")
+ExecStart=$NODE_BIN $SCRIPT_DIR/dist/index.js
+ExecStartPre=/bin/bash -c 'touch $SCRIPT_DIR/.bot.lock'
+ExecStopPost=/bin/bash -c 'rm -f $SCRIPT_DIR/.bot.lock'
+Restart=always
+RestartSec=10
+StandardOutput=append:$SCRIPT_DIR/bot.log
+StandardError=append:$SCRIPT_DIR/bot-error.log
+
+[Install]
+WantedBy=default.target
+EOF
+    systemctl --user daemon-reload
+    exit 0
+fi
+
 # --status: 상태 확인
 if [ "$1" = "--status" ]; then
     if systemctl --user is-active "$SERVICE_NAME" &>/dev/null; then
@@ -118,9 +148,11 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=$SCRIPT_DIR
 Environment=HOME=$HOME
-Environment=PATH=$PATH
-Environment=NVM_DIR=${NVM_DIR:-$HOME/.nvm}
-ExecStart=/bin/bash $SCRIPT_DIR/linux-start.sh --fg
+Environment=PATH=$(dirname "$NODE_BIN"):$PATH
+Environment=NODE_PATH=$(dirname "$NODE_BIN")
+ExecStart=$NODE_BIN $SCRIPT_DIR/dist/index.js
+ExecStartPre=/bin/bash -c 'touch $SCRIPT_DIR/.bot.lock'
+ExecStopPost=/bin/bash -c 'rm -f $SCRIPT_DIR/.bot.lock'
 Restart=always
 RestartSec=10
 StandardOutput=append:$SCRIPT_DIR/bot.log

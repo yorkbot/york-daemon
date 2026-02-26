@@ -130,6 +130,10 @@ def perform_update(icon, item):
     subprocess.run(["npm", "install"], cwd=BOT_DIR)
     subprocess.run(["npm", "run", "build"], cwd=BOT_DIR)
 
+    # Regenerate systemd service file (node path may change)
+    start_script = os.path.join(BOT_DIR, "linux-start.sh")
+    subprocess.run(["/bin/bash", start_script, "--regen-service"], capture_output=True)
+
     current_version = get_version()
     update_available = False
 
