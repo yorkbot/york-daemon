@@ -167,6 +167,8 @@ npm run build
 3. Right-click server name → **"Copy Server ID"**
    - This is your `DISCORD_GUILD_ID`
 
+   ![Copy Server ID](copy-server-id-en.png)
+
 ## 4. Get User ID
 
 1. With Developer Mode enabled

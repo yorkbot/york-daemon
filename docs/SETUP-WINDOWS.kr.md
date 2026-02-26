@@ -167,6 +167,8 @@ npm run build
 3. 서버 이름 우클릭 → **"서버 ID 복사"**
    - 이 값이 `DISCORD_GUILD_ID`
 
+   ![서버 ID 복사](copy-server-id-kr.png)
+
 ## 4. 사용자 ID 확인
 
 1. 개발자 모드가 활성화된 상태에서
