@@ -38,6 +38,17 @@ Your Discord Server
 
 **Control every machine's Claude Code from a single phone.** The channel list itself becomes your real-time status dashboard across all machines and projects.
 
+## Why Discord?
+
+Discord isn't just a chat app — it's a surprisingly perfect fit for controlling AI agents:
+
+- **Already on your phone.** No new app to install, no web UI to bookmark. Open Discord and go.
+- **Push notifications for free.** Get alerted instantly when Claude needs approval or finishes a task — even with the phone locked.
+- **Channels = workspaces.** Each channel maps to a project directory. The sidebar becomes a real-time dashboard of all your projects.
+- **Rich UI out of the box.** Buttons, select menus, embeds, file uploads — Discord provides the interactive components, so the bot doesn't need its own frontend.
+- **Team-ready by default.** Invite teammates to your server. They can watch Claude work, approve tool calls, or queue tasks — no extra auth layer needed.
+- **Cross-platform.** Windows, macOS, Linux, iOS, Android, web browser — Discord runs everywhere.
+
 ## Features
 
 - 📱 Remote control Claude Code from Discord (desktop/web/mobile)
