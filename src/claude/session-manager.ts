@@ -408,9 +408,10 @@ class SessionManager {
         const next = queue.shift()!;
         if (queue.length === 0) this.messageQueue.delete(channelId);
         const remaining = queue.length;
+        const preview = next.prompt.length > 40 ? next.prompt.slice(0, 40) + "…" : next.prompt;
         const msg = remaining > 0
-          ? L(`📨 Processing queued message... (remaining: ${remaining})`, `📨 대기 중이던 메시지를 처리합니다... (남은 큐: ${remaining}개)`)
-          : L("📨 Processing queued message...", "📨 대기 중이던 메시지를 처리합니다...");
+          ? L(`📨 Processing queued message... (remaining: ${remaining})\n> ${preview}`, `📨 대기 중이던 메시지를 처리합니다... (남은 큐: ${remaining}개)\n> ${preview}`)
+          : L(`📨 Processing queued message...\n> ${preview}`, `📨 대기 중이던 메시지를 처리합니다...\n> ${preview}`);
         channel.send(msg).catch(() => {});
         this.sendMessage(next.channel, next.prompt).catch((err) => {
           console.error("Queue sendMessage error:", err);
