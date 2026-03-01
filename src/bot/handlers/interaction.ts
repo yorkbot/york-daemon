@@ -151,6 +151,26 @@ export async function handleButtonInteraction(
     return;
   }
 
+  // Handle queue clear button
+  if (action === "queue-clear") {
+    const channelId = requestId;
+    const cleared = sessionManager.clearQueue(channelId);
+    await interaction.update({
+      embeds: [
+        {
+          title: L("Queue Cleared", "큐 초기화됨"),
+          description: L(
+            `Cleared ${cleared} queued message(s).`,
+            `${cleared}개의 대기 중이던 메시지를 취소했습니다.`
+          ),
+          color: 0xff6600,
+        },
+      ],
+      components: [],
+    });
+    return;
+  }
+
   // Handle session delete button
   if (action === "session-delete") {
     const sessionId = requestId;
