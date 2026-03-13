@@ -7,6 +7,7 @@ import sys
 import threading
 import time
 import webbrowser
+from datetime import datetime
 
 try:
     import pystray
@@ -584,7 +585,6 @@ StartupNotify=false
 def fetch_usage(open_page_on_fail=False):
     global usage_data, usage_last_fetched
     try:
-        from datetime import datetime
         cred_path = os.path.join(os.path.expanduser("~"), ".claude", ".credentials.json")
         if not os.path.exists(cred_path):
             if open_page_on_fail:
@@ -993,6 +993,13 @@ def _show_control_panel_gtk(icon):
     rebuild()
     win.show_all()
 
+    # If usage data is stale (>5 min), fetch immediately on panel open
+    def _fetch_if_stale():
+        if usage_last_fetched is None or (datetime.now() - usage_last_fetched).total_seconds() > 300:
+            fetch_usage()
+            GLib.idle_add(rebuild)
+    threading.Thread(target=_fetch_if_stale, daemon=True).start()
+
 
 def quit_all(icon, item):
     if is_running():
@@ -1154,12 +1161,13 @@ def refresh_loop(icon):
 
 
 def _usage_fetch_loop(icon):
-    """Fetch usage on start and every 5 minutes."""
+    """Fetch usage on start, then every 5 minutes only while panel is open."""
     fetch_usage()
     while icon.visible:
         time.sleep(300)
         try:
-            fetch_usage()
+            if _control_panel_window is not None:
+                fetch_usage()
         except Exception:
             pass
 

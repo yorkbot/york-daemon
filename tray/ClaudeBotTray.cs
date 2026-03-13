@@ -106,7 +106,7 @@ class ClaudeBotTray : Form
         // Usage fetch timer (every 5 minutes)
         usageTimer = new System.Windows.Forms.Timer();
         usageTimer.Interval = 300000;
-        usageTimer.Tick += (s, e) => { try { FetchUsage(); } catch { } };
+        usageTimer.Tick += (s, e) => { try { if (controlPanel != null && !controlPanel.IsDisposed && controlPanel.Visible) FetchUsage(); } catch { } };
         usageTimer.Start();
         FetchUsage();
 
@@ -1122,6 +1122,11 @@ class ClaudeBotTray : Form
         SetDarkTitleBar(controlPanel);
 
         RebuildControlPanel();
+        // Fetch usage if stale (>5 min) when panel opens
+        if (usageLastFetched == null || (DateTime.Now - usageLastFetched.Value).TotalSeconds > 300)
+        {
+            new Thread(() => { try { FetchUsage(); } catch { } }) { IsBackground = true }.Start();
+        }
         controlPanel.ShowDialog();
         controlPanel = null;
     }

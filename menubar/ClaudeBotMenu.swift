@@ -24,6 +24,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // Claude Code usage data
     private var usageData: ClaudeUsageData?
     private var usageLastFetched: Date?
+    private var usageFetchInFlight = false
+    private let usageRefreshCooldown: TimeInterval = 300
+    private let usageStaleThreshold: TimeInterval = 300
 
     override init() {
         let scriptDir = (CommandLine.arguments[0] as NSString).deletingLastPathComponent
@@ -87,18 +90,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
             self?.updateStatus()
             self?.buildMenu()
+            if self?.controlPanel?.isVisible == true {
+                self?.fetchUsageIfStale()
+            }
         }
         // Check for updates every 5 hours
         Timer.scheduledTimer(withTimeInterval: 18000, repeats: true) { [weak self] _ in
             self?.checkForUpdates()
         }
-        // Load cached usage data, then fetch fresh
-        loadUsageCache()
-        fetchUsage()
-        Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
-            self?.fetchUsage()
-        }
-
+        loadUsageCache(forceReload: true)
+        fetchUsageIfStale()
         // 첫 실행 시 컨트롤 패널 표시 (.env 미설정이면 설정 다이얼로그도 함께)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
             self.showControlPanel()
@@ -473,137 +474,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Claude Code Usage
 
-    private func getOAuthTokenFromKeychain() -> String? {
-        // Try native Security framework first
-        if let token = getTokenViaSecurityFramework() { return token }
-        // Fallback: read from ~/.claude/.credentials.json (same as Windows/Linux)
-        if let token = getTokenFromCredentialsFile() { return token }
-        // Fallback: security CLI
-        return getTokenViaSecurityCLI()
-    }
-
-    private func getTokenViaSecurityFramework() -> String? {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: "Claude Code-credentials",
-            kSecAttrAccount as String: NSUserName(),
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne
-        ]
-        var result: AnyObject?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
-        guard status == errSecSuccess, let data = result as? Data,
-              let jsonString = String(data: data, encoding: .utf8) else { return nil }
-        return parseAccessToken(from: jsonString)
-    }
-
-    private func getTokenFromCredentialsFile() -> String? {
-        let path = NSHomeDirectory() + "/.claude/.credentials.json"
-        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
-              let jsonString = String(data: data, encoding: .utf8) else { return nil }
-        return parseAccessToken(from: jsonString)
-    }
-
-    private func getTokenViaSecurityCLI() -> String? {
-        let task = Process()
-        task.launchPath = "/usr/bin/security"
-        task.arguments = ["find-generic-password", "-a", NSUserName(), "-s", "Claude Code-credentials", "-w"]
-        let pipe = Pipe()
-        task.standardOutput = pipe
-        task.standardError = Pipe()
-        do {
-            try task.run()
-            task.waitUntilExit()
-            guard task.terminationStatus == 0 else { return nil }
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            guard let jsonString = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
-                  !jsonString.isEmpty else { return nil }
-            return parseAccessToken(from: jsonString)
-        } catch {
-            return nil
-        }
-    }
-
-    private func parseAccessToken(from jsonString: String) -> String? {
-        guard let jsonData = jsonString.data(using: .utf8),
-              let dict = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
-              let oauth = dict["claudeAiOauth"] as? [String: Any],
-              let token = oauth["accessToken"] as? String else { return nil }
-        return token
-    }
-
-    private func fetchUsage(force: Bool = false, openPageOnFail: Bool = false) {
-        // Skip if fetched recently (within 30 seconds) unless forced
-        if !force, let lastFetch = usageLastFetched, Date().timeIntervalSince(lastFetch) < 30 {
-            return
-        }
-
-        DispatchQueue.global(qos: .utility).async { [weak self] in
-            guard let self = self else { return }
-            guard let token = self.getOAuthTokenFromKeychain() else {
-                if openPageOnFail {
-                    DispatchQueue.main.async { self.openUsagePage() }
-                }
-                return
-            }
-
-            guard let url = URL(string: "https://api.anthropic.com/api/oauth/usage") else { return }
-            var request = URLRequest(url: url, timeoutInterval: 10)
-            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
-
-            let semaphore = DispatchSemaphore(value: 0)
-            var responseData: Data?
-            var responseCode: Int = 0
-            let task = URLSession.shared.dataTask(with: request) { data, response, error in
-                if let httpResponse = response as? HTTPURLResponse {
-                    responseCode = httpResponse.statusCode
-                    if httpResponse.statusCode == 200 {
-                        responseData = data
-                    }
-                }
-                semaphore.signal()
-            }
-            task.resume()
-            semaphore.wait()
-
-            guard let data = responseData,
-                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                if openPageOnFail {
-                    DispatchQueue.main.async { self.openUsagePage() }
-                }
-                return
-            }
-
-            var usage = ClaudeUsageData()
-
-            if let fiveHour = json["five_hour"] as? [String: Any],
-               let util = fiveHour["utilization"] as? Double {
-                usage.fiveHour = ClaudeUsageTier(utilization: util / 100.0, resetsAt: fiveHour["resets_at"] as? String)
-            }
-            if let sevenDay = json["seven_day"] as? [String: Any],
-               let util = sevenDay["utilization"] as? Double {
-                usage.sevenDay = ClaudeUsageTier(utilization: util / 100.0, resetsAt: sevenDay["resets_at"] as? String)
-            }
-            if let sonnet = json["seven_day_sonnet"] as? [String: Any],
-               let util = sonnet["utilization"] as? Double {
-                usage.sevenDaySonnet = ClaudeUsageTier(utilization: util / 100.0, resetsAt: sonnet["resets_at"] as? String)
-            }
-
-            self.saveUsageCache(json: json)
-
-            DispatchQueue.main.async {
-                self.usageData = usage
-                self.usageLastFetched = Date()
-                self.rebuildControlPanel()
-            }
-        }
-    }
-
     private var usageCachePath: String {
         let home = NSHomeDirectory()
         return "\(home)/.claude/.usage-cache.json"
+    }
+
+    private func usageCacheModifiedAt() -> Date? {
+        let path = usageCachePath
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: path) else { return nil }
+        return attrs[.modificationDate] as? Date
     }
 
     private func saveUsageCache(json: [String: Any]) {
@@ -614,8 +493,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func loadUsageCache() {
-        guard usageData == nil else { return }
+    private func loadUsageCache(forceReload: Bool = false) {
+        if usageData != nil && !forceReload { return }
         guard let data = try? Data(contentsOf: URL(fileURLWithPath: usageCachePath)),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
 
@@ -636,8 +515,138 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if let fetchedStr = json["_fetched_at"] as? String {
             let fmt = ISO8601DateFormatter()
             usageLastFetched = fmt.date(from: fetchedStr)
+        } else {
+            usageLastFetched = usageCacheModifiedAt()
         }
         usageData = usage
+    }
+
+    private func fetchUsageIfStale() {
+        let now = Date()
+        let isStale: Bool
+        if let lastFetch = usageLastFetched {
+            isStale = now.timeIntervalSince(lastFetch) >= usageStaleThreshold
+        } else {
+            isStale = true
+        }
+        if isStale {
+            fetchUsage()
+        }
+    }
+
+    private func writeClaudeUsageHelper() -> (helperPath: String, bridgePath: String)? {
+        let tmpDir = NSTemporaryDirectory()
+        let helperPath = (tmpDir as NSString).appendingPathComponent("claude-discord-usage-helper.mjs")
+        let bridgePath = (tmpDir as NSString).appendingPathComponent("claude-discord-usage-bridge.mjs")
+        let source = """
+        import fs from "fs/promises";
+        import { execFileSync } from "child_process";
+        import { pathToFileURL } from "url";
+
+        const cliBin = execFileSync("/bin/bash", ["-lc", "command -v claude"], { encoding: "utf8" }).trim();
+        if (!cliBin) {
+          throw new Error("claude not found in PATH");
+        }
+
+        const src = await fs.realpath(cliBin);
+        const bridgePath = process.argv[2];
+        let code = await fs.readFile(src, "utf8");
+        code = code.replace(/tGz\\(\\);\\s*$/, "if (!process.env.CLAUDE_CODE_EMBEDDED_USAGE_ONLY) tGz();\\nexport { r3q, o3q, Rr6, rf1 };\\n");
+        await fs.writeFile(bridgePath, code);
+
+        process.env.CLAUDE_CODE_EMBEDDED_USAGE_ONLY = "1";
+        const mod = await import(pathToFileURL(bridgePath).href + `?t=${Date.now()}`);
+        mod.rf1?.();
+        mod.o3q?.();
+        mod.Rr6?.();
+
+        const data = await mod.r3q();
+        process.stdout.write(JSON.stringify(data ?? {}));
+        """
+
+        do {
+            try source.write(to: URL(fileURLWithPath: helperPath), atomically: true, encoding: .utf8)
+            return (helperPath, bridgePath)
+        } catch {
+            return nil
+        }
+    }
+
+    private func fetchUsageJSONViaClaudeCLI() -> [String: Any]? {
+        guard let paths = writeClaudeUsageHelper() else { return nil }
+
+        let helperEscaped = paths.helperPath.replacingOccurrences(of: "'", with: "'\\''")
+        let bridgeEscaped = paths.bridgePath.replacingOccurrences(of: "'", with: "'\\''")
+        let command = """
+        export NVM_DIR="$HOME/.nvm"
+        [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" >/dev/null 2>&1
+        node '\(helperEscaped)' '\(bridgeEscaped)'
+        """
+
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        task.arguments = ["-lc", command]
+        task.currentDirectoryURL = URL(fileURLWithPath: botDir)
+
+        let stdout = Pipe()
+        let stderr = Pipe()
+        task.standardOutput = stdout
+        task.standardError = stderr
+
+        let semaphore = DispatchSemaphore(value: 0)
+        task.terminationHandler = { _ in semaphore.signal() }
+
+        do {
+            try task.run()
+        } catch {
+            return nil
+        }
+
+        if semaphore.wait(timeout: .now() + 12) == .timedOut {
+            task.terminate()
+            return nil
+        }
+
+        let stdoutData = stdout.fileHandleForReading.readDataToEndOfFile()
+        let raw = String(data: stdoutData, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !raw.isEmpty,
+              let data = raw.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        return json
+    }
+
+    private func fetchUsage(force: Bool = false, openPageOnFail: Bool = false) {
+        if usageFetchInFlight { return }
+        if !force, let lastFetch = usageLastFetched, Date().timeIntervalSince(lastFetch) < usageRefreshCooldown {
+            return
+        }
+
+        usageFetchInFlight = true
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self = self else { return }
+            guard let json = self.fetchUsageJSONViaClaudeCLI(),
+                  json["five_hour"] != nil || json["seven_day"] != nil || json["seven_day_sonnet"] != nil else {
+                DispatchQueue.main.async {
+                    self.usageFetchInFlight = false
+                    self.rebuildControlPanel()
+                    if self.usageData == nil && openPageOnFail {
+                        self.openUsagePage()
+                    }
+                }
+                return
+            }
+
+            self.saveUsageCache(json: json)
+
+            DispatchQueue.main.async {
+                self.usageFetchInFlight = false
+                self.loadUsageCache(forceReload: true)
+                self.rebuildControlPanel()
+            }
+        }
     }
 
     private func formatResetTime(_ isoString: String?) -> String {
@@ -686,11 +695,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         controlPanel = window
 
         rebuildControlPanel()
-
-        // Auto-fetch usage if not yet loaded (non-forced, respects 30s cooldown)
-        if usageData == nil {
-            fetchUsage()
-        }
+        fetchUsageIfStale()
 
         window.makeKeyAndOrderFront(nil)
     }
@@ -887,7 +892,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
             elements.append((usageContainer, finalHeight))
         } else {
-            // Show loading / fetch button if no data yet
+            // Cache stays as fallback. Manual refresh asks Claude itself to refresh usage data.
             let fetchBtn = createStyledButton(
                 title: L("Load Usage Info", "사용량 정보 불러오기"), width: contentWidth,
                 bgColor: NSColor(white: 0.5, alpha: 0.08), fgColor: .secondaryLabelColor
