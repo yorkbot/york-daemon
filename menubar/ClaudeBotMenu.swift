@@ -21,6 +21,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var cachedReleaseNotes: String = ""
     private var cachedNewVersion: String = ""
 
+    // Claude Code usage data
+    private var usageData: ClaudeUsageData?
+    private var usageLastFetched: Date?
+
     override init() {
         let scriptDir = (CommandLine.arguments[0] as NSString).deletingLastPathComponent
         botDir = (scriptDir as NSString).deletingLastPathComponent
@@ -87,6 +91,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Check for updates every 5 hours
         Timer.scheduledTimer(withTimeInterval: 18000, repeats: true) { [weak self] _ in
             self?.checkForUpdates()
+        }
+        // Load cached usage data, then fetch fresh
+        loadUsageCache()
+        fetchUsage()
+        Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
+            self?.fetchUsage()
         }
 
         // 첫 실행 시 컨트롤 패널 표시 (.env 미설정이면 설정 다이얼로그도 함께)
@@ -461,6 +471,195 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func switchToEN() { setLanguage(false) }
     @objc private func switchToKR() { setLanguage(true) }
 
+    // MARK: - Claude Code Usage
+
+    private func getOAuthTokenFromKeychain() -> String? {
+        // Try native Security framework first
+        if let token = getTokenViaSecurityFramework() { return token }
+        // Fallback: read from ~/.claude/.credentials.json (same as Windows/Linux)
+        if let token = getTokenFromCredentialsFile() { return token }
+        // Fallback: security CLI
+        return getTokenViaSecurityCLI()
+    }
+
+    private func getTokenViaSecurityFramework() -> String? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: "Claude Code-credentials",
+            kSecAttrAccount as String: NSUserName(),
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
+        var result: AnyObject?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        guard status == errSecSuccess, let data = result as? Data,
+              let jsonString = String(data: data, encoding: .utf8) else { return nil }
+        return parseAccessToken(from: jsonString)
+    }
+
+    private func getTokenFromCredentialsFile() -> String? {
+        let path = NSHomeDirectory() + "/.claude/.credentials.json"
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+              let jsonString = String(data: data, encoding: .utf8) else { return nil }
+        return parseAccessToken(from: jsonString)
+    }
+
+    private func getTokenViaSecurityCLI() -> String? {
+        let task = Process()
+        task.launchPath = "/usr/bin/security"
+        task.arguments = ["find-generic-password", "-a", NSUserName(), "-s", "Claude Code-credentials", "-w"]
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        task.standardError = Pipe()
+        do {
+            try task.run()
+            task.waitUntilExit()
+            guard task.terminationStatus == 0 else { return nil }
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            guard let jsonString = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !jsonString.isEmpty else { return nil }
+            return parseAccessToken(from: jsonString)
+        } catch {
+            return nil
+        }
+    }
+
+    private func parseAccessToken(from jsonString: String) -> String? {
+        guard let jsonData = jsonString.data(using: .utf8),
+              let dict = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+              let oauth = dict["claudeAiOauth"] as? [String: Any],
+              let token = oauth["accessToken"] as? String else { return nil }
+        return token
+    }
+
+    private func fetchUsage(force: Bool = false, openPageOnFail: Bool = false) {
+        // Skip if fetched recently (within 30 seconds) unless forced
+        if !force, let lastFetch = usageLastFetched, Date().timeIntervalSince(lastFetch) < 30 {
+            return
+        }
+
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self = self else { return }
+            guard let token = self.getOAuthTokenFromKeychain() else {
+                if openPageOnFail {
+                    DispatchQueue.main.async { self.openUsagePage() }
+                }
+                return
+            }
+
+            guard let url = URL(string: "https://api.anthropic.com/api/oauth/usage") else { return }
+            var request = URLRequest(url: url, timeoutInterval: 10)
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
+
+            let semaphore = DispatchSemaphore(value: 0)
+            var responseData: Data?
+            var responseCode: Int = 0
+            let task = URLSession.shared.dataTask(with: request) { data, response, error in
+                if let httpResponse = response as? HTTPURLResponse {
+                    responseCode = httpResponse.statusCode
+                    if httpResponse.statusCode == 200 {
+                        responseData = data
+                    }
+                }
+                semaphore.signal()
+            }
+            task.resume()
+            semaphore.wait()
+
+            guard let data = responseData,
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                if openPageOnFail {
+                    DispatchQueue.main.async { self.openUsagePage() }
+                }
+                return
+            }
+
+            var usage = ClaudeUsageData()
+
+            if let fiveHour = json["five_hour"] as? [String: Any],
+               let util = fiveHour["utilization"] as? Double {
+                usage.fiveHour = ClaudeUsageTier(utilization: util / 100.0, resetsAt: fiveHour["resets_at"] as? String)
+            }
+            if let sevenDay = json["seven_day"] as? [String: Any],
+               let util = sevenDay["utilization"] as? Double {
+                usage.sevenDay = ClaudeUsageTier(utilization: util / 100.0, resetsAt: sevenDay["resets_at"] as? String)
+            }
+            if let sonnet = json["seven_day_sonnet"] as? [String: Any],
+               let util = sonnet["utilization"] as? Double {
+                usage.sevenDaySonnet = ClaudeUsageTier(utilization: util / 100.0, resetsAt: sonnet["resets_at"] as? String)
+            }
+
+            self.saveUsageCache(json: json)
+
+            DispatchQueue.main.async {
+                self.usageData = usage
+                self.usageLastFetched = Date()
+                self.rebuildControlPanel()
+            }
+        }
+    }
+
+    private var usageCachePath: String {
+        let home = NSHomeDirectory()
+        return "\(home)/.claude/.usage-cache.json"
+    }
+
+    private func saveUsageCache(json: [String: Any]) {
+        var cache = json
+        cache["_fetched_at"] = ISO8601DateFormatter().string(from: Date())
+        if let data = try? JSONSerialization.data(withJSONObject: cache) {
+            try? data.write(to: URL(fileURLWithPath: usageCachePath))
+        }
+    }
+
+    private func loadUsageCache() {
+        guard usageData == nil else { return }
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: usageCachePath)),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+
+        var usage = ClaudeUsageData()
+        if let fiveHour = json["five_hour"] as? [String: Any],
+           let util = fiveHour["utilization"] as? Double {
+            usage.fiveHour = ClaudeUsageTier(utilization: util / 100.0, resetsAt: fiveHour["resets_at"] as? String)
+        }
+        if let sevenDay = json["seven_day"] as? [String: Any],
+           let util = sevenDay["utilization"] as? Double {
+            usage.sevenDay = ClaudeUsageTier(utilization: util / 100.0, resetsAt: sevenDay["resets_at"] as? String)
+        }
+        if let sonnet = json["seven_day_sonnet"] as? [String: Any],
+           let util = sonnet["utilization"] as? Double {
+            usage.sevenDaySonnet = ClaudeUsageTier(utilization: util / 100.0, resetsAt: sonnet["resets_at"] as? String)
+        }
+
+        if let fetchedStr = json["_fetched_at"] as? String {
+            let fmt = ISO8601DateFormatter()
+            usageLastFetched = fmt.date(from: fetchedStr)
+        }
+        usageData = usage
+    }
+
+    private func formatResetTime(_ isoString: String?) -> String {
+        guard let isoString = isoString else { return "" }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        guard let date = formatter.date(from: isoString) ?? ISO8601DateFormatter().date(from: isoString) else { return "" }
+        let diff = date.timeIntervalSinceNow
+        if diff <= 0 { return L("Resetting...", "초기화 중...") }
+        let hours = Int(diff) / 3600
+        let minutes = (Int(diff) % 3600) / 60
+        if hours > 0 {
+            return L("Resets in \(hours)h", "\(hours)시간 후 초기화")
+        } else {
+            return L("Resets in \(minutes)m", "\(minutes)분 후 초기화")
+        }
+    }
+
+    @objc private func fetchUsageClicked() {
+        fetchUsage(force: true, openPageOnFail: true)
+    }
+
     // MARK: - Control Panel Window
 
     @objc private func showControlPanel() {
@@ -487,6 +686,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         controlPanel = window
 
         rebuildControlPanel()
+
+        // Auto-fetch usage if not yet loaded (non-forced, respects 30s cooldown)
+        if usageData == nil {
+            fetchUsage()
+        }
 
         window.makeKeyAndOrderFront(nil)
     }
@@ -579,6 +783,120 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         statusContainer.addSubview(statusLabel)
 
         elements.append((statusContainer, 50))
+
+        // Claude Code Usage section
+        if let usage = usageData {
+            let usageContainer = NSView(frame: NSRect(x: 0, y: 0, width: contentWidth, height: 10))
+            usageContainer.wantsLayer = true
+            usageContainer.layer?.backgroundColor = NSColor(white: 0.5, alpha: 0.08).cgColor
+            usageContainer.layer?.cornerRadius = 10
+
+            var usageItems: [(String, Double, String)] = []
+            if let fh = usage.fiveHour {
+                usageItems.append((L("Session (5hr)", "세션 (5시간)"), fh.utilization, formatResetTime(fh.resetsAt)))
+            }
+            if let sd = usage.sevenDay {
+                usageItems.append((L("Weekly (7 day)", "주간 (7일)"), sd.utilization, formatResetTime(sd.resetsAt)))
+            }
+            if let ss = usage.sevenDaySonnet {
+                usageItems.append((L("Weekly Sonnet", "주간 Sonnet"), ss.utilization, formatResetTime(ss.resetsAt)))
+            }
+
+            let itemHeight: CGFloat = 44
+            let padding: CGFloat = 12
+            let totalUsageHeight = CGFloat(usageItems.count) * itemHeight + padding * 2
+
+            var yOffset = totalUsageHeight - padding
+            for (label, util, resetText) in usageItems {
+                yOffset -= itemHeight
+                let percent = Int(util * 100)
+
+                // Label + percentage
+                let nameLabel = NSTextField(labelWithString: label)
+                nameLabel.frame = NSRect(x: 14, y: yOffset + 22, width: 200, height: 16)
+                nameLabel.font = NSFont.systemFont(ofSize: 11, weight: .medium)
+                nameLabel.textColor = .secondaryLabelColor
+                usageContainer.addSubview(nameLabel)
+
+                let pctLabel = NSTextField(labelWithString: "\(percent)%")
+                pctLabel.frame = NSRect(x: contentWidth - 54, y: yOffset + 22, width: 40, height: 16)
+                pctLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .semibold)
+                pctLabel.textColor = util > 0.9 ? .systemRed : (util > 0.7 ? .systemOrange : .labelColor)
+                pctLabel.alignment = .right
+                usageContainer.addSubview(pctLabel)
+
+                // Progress bar background
+                let barWidth = contentWidth - 28
+                let barBg = NSView(frame: NSRect(x: 14, y: yOffset + 6, width: barWidth, height: 8))
+                barBg.wantsLayer = true
+                barBg.layer?.backgroundColor = NSColor(white: 0.5, alpha: 0.15).cgColor
+                barBg.layer?.cornerRadius = 4
+                usageContainer.addSubview(barBg)
+
+                // Progress bar fill
+                let fillWidth = max(0, min(barWidth, barWidth * CGFloat(util)))
+                let barFill = NSView(frame: NSRect(x: 14, y: yOffset + 6, width: fillWidth, height: 8))
+                barFill.wantsLayer = true
+                let barColor: NSColor = util > 0.9 ? .systemRed : (util > 0.7 ? .systemOrange : .systemBlue)
+                barFill.layer?.backgroundColor = barColor.cgColor
+                barFill.layer?.cornerRadius = 4
+                usageContainer.addSubview(barFill)
+
+                // Reset time
+                if !resetText.isEmpty {
+                    let resetLabel = NSTextField(labelWithString: resetText)
+                    resetLabel.frame = NSRect(x: 14, y: yOffset - 8, width: barWidth, height: 12)
+                    resetLabel.font = NSFont.systemFont(ofSize: 9)
+                    resetLabel.textColor = .tertiaryLabelColor
+                    usageContainer.addSubview(resetLabel)
+                }
+            }
+
+            // Last fetched time label
+            var lastFetchedText = ""
+            if let fetched = usageLastFetched {
+                let ago = Int(Date().timeIntervalSince(fetched))
+                if ago < 60 {
+                    lastFetchedText = L("Updated just now", "방금 갱신됨")
+                } else if ago < 3600 {
+                    lastFetchedText = L("Updated \(ago / 60)m ago", "\(ago / 60)분 전 갱신")
+                } else {
+                    lastFetchedText = L("Updated \(ago / 3600)h ago", "\(ago / 3600)시간 전 갱신")
+                }
+            }
+            if !lastFetchedText.isEmpty {
+                let fetchedLabel = NSTextField(labelWithString: lastFetchedText)
+                fetchedLabel.frame = NSRect(x: 14, y: 4, width: contentWidth - 28, height: 12)
+                fetchedLabel.font = NSFont.systemFont(ofSize: 9)
+                fetchedLabel.textColor = .tertiaryLabelColor
+                fetchedLabel.alignment = .right
+                usageContainer.addSubview(fetchedLabel)
+            }
+
+            let finalHeight = totalUsageHeight + (lastFetchedText.isEmpty ? 0 : 8)
+            usageContainer.frame = NSRect(x: 0, y: 0, width: contentWidth, height: finalHeight)
+
+            // Clickable overlay to open usage page in browser
+            let clickBtn = NSButton(frame: NSRect(x: 0, y: 0, width: contentWidth, height: finalHeight))
+            clickBtn.title = ""
+            clickBtn.isBordered = false
+            clickBtn.isTransparent = true
+            clickBtn.target = self
+            clickBtn.action = #selector(openUsagePage)
+            usageContainer.addSubview(clickBtn)
+
+            elements.append((usageContainer, finalHeight))
+        } else {
+            // Show loading / fetch button if no data yet
+            let fetchBtn = createStyledButton(
+                title: L("Load Usage Info", "사용량 정보 불러오기"), width: contentWidth,
+                bgColor: NSColor(white: 0.5, alpha: 0.08), fgColor: .secondaryLabelColor
+            )
+            fetchBtn.frame = NSRect(x: 0, y: 0, width: contentWidth, height: 30)
+            fetchBtn.target = self
+            fetchBtn.action = #selector(fetchUsageClicked)
+            elements.append((fetchBtn, 34))
+        }
 
         // Bot control buttons
         if hasEnv {
@@ -827,6 +1145,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func restartBotFromPanel() {
         restartBot()
+    }
+
+    @objc private func openUsagePage() {
+        NSWorkspace.shared.open(URL(string: "https://claude.ai/settings/usage")!)
     }
 
     @objc private func openGitHub() {
@@ -1250,6 +1572,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 // MARK: - Status Dot View
+
+// MARK: - Claude Usage Data Model
+
+struct ClaudeUsageTier {
+    let utilization: Double // 0.0 ~ 1.0
+    let resetsAt: String?
+}
+
+struct ClaudeUsageData {
+    var fiveHour: ClaudeUsageTier?
+    var sevenDay: ClaudeUsageTier?
+    var sevenDaySonnet: ClaudeUsageTier?
+}
 
 class StatusDot: NSView {
     var color: NSColor

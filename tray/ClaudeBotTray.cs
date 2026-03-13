@@ -3,6 +3,9 @@ using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.IO;
+using System.Globalization;
+using System.Net;
+using System.Text.RegularExpressions;
 using System.Windows.Forms;
 using System.Threading;
 using System.Runtime.InteropServices;
@@ -32,6 +35,16 @@ class ClaudeBotTray : Form
     private Color lastIconColor = Color.Empty;
     private IntPtr lastHIcon = IntPtr.Zero;
     private string lastStatusText = "";
+
+    // Usage data
+    private double usageFiveHour = -1;
+    private double usageSevenDay = -1;
+    private double usageSevenDaySonnet = -1;
+    private string usageFiveHourReset = "";
+    private string usageSevenDayReset = "";
+    private string usageSevenDaySonnetReset = "";
+    private DateTime? usageLastFetched = null;
+    private System.Windows.Forms.Timer usageTimer;
 
     // Language support
     private string langPrefFile;
@@ -86,6 +99,16 @@ class ClaudeBotTray : Form
 
         // Initial update check
         CheckForUpdates();
+
+        // Load cached usage, then fetch fresh
+        LoadUsageCache();
+
+        // Usage fetch timer (every 5 minutes)
+        usageTimer = new System.Windows.Forms.Timer();
+        usageTimer.Interval = 300000;
+        usageTimer.Tick += (s, e) => { try { FetchUsage(); } catch { } };
+        usageTimer.Start();
+        FetchUsage();
 
         bool showPanel = false;
         string[] args = Environment.GetCommandLineArgs();
@@ -1225,6 +1248,111 @@ class ClaudeBotTray : Form
         controlPanel.Controls.Add(statusPanel);
         y += 62;
 
+        // Claude Code Usage section
+        if (usageFiveHour >= 0 || usageSevenDay >= 0 || usageSevenDaySonnet >= 0)
+        {
+            EventHandler openUsagePage = (s, ev) => { Process.Start("https://claude.ai/settings/usage"); };
+
+            var usageLabel = new Label()
+            {
+                Text = L("Claude Code Usage", "Claude Code 사용량"),
+                Left = 25, Top = y, Width = btnWidth, Height = 20,
+                Font = new Font(FontFamily.GenericSansSerif, 9.5f, FontStyle.Bold),
+                ForeColor = FgWhite, BackColor = Color.Transparent,
+                Cursor = Cursors.Hand
+            };
+            usageLabel.Click += openUsagePage;
+            controlPanel.Controls.Add(usageLabel);
+            y += 24;
+
+            // Usage bars
+            string[][] usageItems = new string[][] {
+                new string[] { L("Session 5hr", "세션 5시간"), usageFiveHour.ToString("F3"), usageFiveHourReset },
+                new string[] { L("Weekly 7day", "주간 7일"), usageSevenDay.ToString("F3"), usageSevenDayReset },
+                new string[] { L("Weekly Sonnet", "주간 Sonnet"), usageSevenDaySonnet.ToString("F3"), usageSevenDaySonnetReset }
+            };
+            double[] usageValues = new double[] { usageFiveHour, usageSevenDay, usageSevenDaySonnet };
+
+            for (int i = 0; i < 3; i++)
+            {
+                if (usageValues[i] < 0) continue;
+                double pct = usageValues[i];
+                int pctInt = (int)(pct * 100);
+                Color barColor = pct < 0.5 ? AccentBlue : pct < 0.8 ? Color.FromArgb(220, 160, 50) : Color.FromArgb(220, 80, 80);
+
+                // Label + percentage
+                string resetInfo = usageItems[i][2].Length > 0 ? "  (" + usageItems[i][2] + ")" : "";
+                var itemLabel = new Label()
+                {
+                    Text = usageItems[i][0] + ":  " + pctInt + "%" + resetInfo,
+                    Left = 25, Top = y, Width = btnWidth, Height = 16,
+                    Font = new Font(FontFamily.GenericSansSerif, 8.5f),
+                    ForeColor = FgGray, BackColor = Color.Transparent,
+                    Cursor = Cursors.Hand
+                };
+                itemLabel.Click += openUsagePage;
+                controlPanel.Controls.Add(itemLabel);
+                y += 18;
+
+                // Progress bar background
+                int barWidth = btnWidth;
+                int barHeight = 10;
+                var barBg = new Panel() { Left = 25, Top = y, Width = barWidth, Height = barHeight, BackColor = BgPanel, Cursor = Cursors.Hand };
+                using (var rr = RoundedRect(new Rectangle(0, 0, barWidth, barHeight), 4))
+                    barBg.Region = new Region(rr);
+                barBg.Click += openUsagePage;
+                controlPanel.Controls.Add(barBg);
+
+                // Progress bar fill
+                int fillWidth = Math.Max(1, (int)(barWidth * Math.Min(pct, 1.0)));
+                var barFill = new Panel() { Left = 0, Top = 0, Width = fillWidth, Height = barHeight, BackColor = barColor, Cursor = Cursors.Hand };
+                if (fillWidth >= 8)
+                {
+                    using (var rr = RoundedRect(new Rectangle(0, 0, fillWidth, barHeight), 4))
+                        barFill.Region = new Region(rr);
+                }
+                barFill.Click += openUsagePage;
+                barBg.Controls.Add(barFill);
+
+                y += 18;
+            }
+
+            // Last fetched time
+            string lastFetchedText = FormatLastFetched();
+            if (lastFetchedText.Length > 0)
+            {
+                var fetchedLabel = new Label()
+                {
+                    Text = lastFetchedText,
+                    Left = 25, Top = y, Width = btnWidth, Height = 14,
+                    Font = new Font(FontFamily.GenericSansSerif, 7.5f),
+                    ForeColor = FgDimGray, BackColor = Color.Transparent,
+                    TextAlign = ContentAlignment.MiddleRight,
+                    Cursor = Cursors.Hand
+                };
+                fetchedLabel.Click += openUsagePage;
+                controlPanel.Controls.Add(fetchedLabel);
+                y += 16;
+            }
+
+            // Refresh usage button
+            var refreshUsageBtn = MakeDarkButton(L("Refresh Usage", "사용량 새로고침"), 25, y, btnWidth, 32, BgButton, FgGray);
+            refreshUsageBtn.Font = new Font(FontFamily.GenericSansSerif, 8.5f);
+            refreshUsageBtn.Click += (s, ev) => {
+                FetchUsage();
+            };
+            controlPanel.Controls.Add(refreshUsageBtn);
+            y += 42;
+        }
+        else
+        {
+            // Show fetch button when no data yet
+            var fetchUsageBtn = MakeDarkButton(L("Load Usage Info", "사용량 정보 불러오기"), 25, y, btnWidth, 36, BgButton, FgWhite);
+            fetchUsageBtn.Click += (s, ev) => { FetchUsage(true); };
+            controlPanel.Controls.Add(fetchUsageBtn);
+            y += 46;
+        }
+
         // Bot control buttons
         if (hasEnv)
         {
@@ -1401,6 +1529,153 @@ class ClaudeBotTray : Form
         }
 
         controlPanel.ResumeLayout(true);
+    }
+
+    private void FetchUsage(bool openPageOnFail = false)
+    {
+        bool success = false;
+        try
+        {
+            string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            string credPath = Path.Combine(home, ".claude", ".credentials.json");
+            if (!File.Exists(credPath)) { if (openPageOnFail) Process.Start("https://claude.ai/settings/usage"); return; }
+
+            string credJson = File.ReadAllText(credPath);
+            var tokenMatch = Regex.Match(credJson, "\"accessToken\"\\s*:\\s*\"([^\"]+)\"");
+            if (!tokenMatch.Success) { if (openPageOnFail) Process.Start("https://claude.ai/settings/usage"); return; }
+            string token = tokenMatch.Groups[1].Value;
+
+            var request = (HttpWebRequest)WebRequest.Create("https://api.anthropic.com/api/oauth/usage");
+            request.Method = "GET";
+            request.Timeout = 10000;
+            request.Headers.Add("Authorization", "Bearer " + token);
+            request.Headers.Add("anthropic-beta", "oauth-2025-04-20");
+
+            using (var response = (HttpWebResponse)request.GetResponse())
+            using (var reader = new StreamReader(response.GetResponseStream()))
+            {
+                string json = reader.ReadToEnd();
+                ParseUsageJson(json);
+                usageLastFetched = DateTime.Now;
+                SaveUsageCache(json);
+                success = true;
+            }
+
+            // Refresh panel if open
+            if (controlPanel != null && !controlPanel.IsDisposed)
+            {
+                if (controlPanel.InvokeRequired)
+                    controlPanel.Invoke(new Action(() => RebuildControlPanel()));
+                else
+                    RebuildControlPanel();
+            }
+        }
+        catch
+        {
+            if (openPageOnFail) Process.Start("https://claude.ai/settings/usage");
+        }
+    }
+
+    private void ParseUsageJson(string json)
+    {
+        // Parse five_hour, seven_day, seven_day_sonnet utilization and resets_at
+        usageFiveHour = ParseUtilization(json, "five_hour");
+        usageSevenDay = ParseUtilization(json, "seven_day");
+        usageSevenDaySonnet = ParseUtilization(json, "seven_day_sonnet");
+        usageFiveHourReset = ParseResetTime(json, "five_hour");
+        usageSevenDayReset = ParseResetTime(json, "seven_day");
+        usageSevenDaySonnetReset = ParseResetTime(json, "seven_day_sonnet");
+    }
+
+    private int FindSectionIndex(string json, string section)
+    {
+        // For "seven_day", must not match "seven_day_sonnet"
+        string pattern = "\"" + Regex.Escape(section) + "\"\\s*:";
+        var m = Regex.Match(json, pattern);
+        if (!m.Success) return -1;
+        return m.Index;
+    }
+
+    private double ParseUtilization(string json, string section)
+    {
+        int idx = FindSectionIndex(json, section);
+        if (idx < 0) return -1;
+        string sub = json.Substring(idx, Math.Min(200, json.Length - idx));
+        var m = Regex.Match(sub, "\"utilization\"\\s*:\\s*([\\d.]+)");
+        if (!m.Success) return -1;
+        double val;
+        if (double.TryParse(m.Groups[1].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out val))
+            return val / 100.0;
+        return -1;
+    }
+
+    private string ParseResetTime(string json, string section)
+    {
+        int idx = FindSectionIndex(json, section);
+        if (idx < 0) return "";
+        string sub = json.Substring(idx, Math.Min(300, json.Length - idx));
+        var m = Regex.Match(sub, "\"resets_at\"\\s*:\\s*\"([^\"]+)\"");
+        if (!m.Success) return "";
+        return FormatResetTime(m.Groups[1].Value);
+    }
+
+    private string FormatResetTime(string iso8601)
+    {
+        try
+        {
+            var resetTime = DateTime.Parse(iso8601, null, DateTimeStyles.RoundtripKind);
+            var diff = resetTime.ToUniversalTime() - DateTime.UtcNow;
+            if (diff.TotalMinutes < 1) return L("soon", "곧");
+            if (diff.TotalHours < 1) return string.Format(L("Reset in {0}m", "{0}분 후 초기화"), (int)diff.TotalMinutes);
+            return string.Format(L("Reset in {0}h", "{0}시간 후 초기화"), (int)Math.Ceiling(diff.TotalHours));
+        }
+        catch { return ""; }
+    }
+
+    private string UsageCachePath
+    {
+        get { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude", ".usage-cache.json"); }
+    }
+
+    private void SaveUsageCache(string json)
+    {
+        try
+        {
+            // Append _fetched_at timestamp to the raw JSON
+            string timestamp = DateTime.UtcNow.ToString("o");
+            string cached = json.TrimEnd().TrimEnd('}') + ",\"_fetched_at\":\"" + timestamp + "\"}";
+            File.WriteAllText(UsageCachePath, cached);
+        }
+        catch { }
+    }
+
+    private void LoadUsageCache()
+    {
+        try
+        {
+            if (!File.Exists(UsageCachePath)) return;
+            string json = File.ReadAllText(UsageCachePath);
+            ParseUsageJson(json);
+
+            // Parse _fetched_at
+            var m = Regex.Match(json, "\"_fetched_at\"\\s*:\\s*\"([^\"]+)\"");
+            if (m.Success)
+            {
+                DateTime dt;
+                if (DateTime.TryParse(m.Groups[1].Value, null, DateTimeStyles.RoundtripKind, out dt))
+                    usageLastFetched = dt.ToLocalTime();
+            }
+        }
+        catch { }
+    }
+
+    private string FormatLastFetched()
+    {
+        if (usageLastFetched == null) return "";
+        var ago = (int)(DateTime.Now - usageLastFetched.Value).TotalSeconds;
+        if (ago < 60) return L("Updated just now", "방금 갱신됨");
+        if (ago < 3600) return string.Format(L("Updated {0}m ago", "{0}분 전 갱신"), ago / 60);
+        return string.Format(L("Updated {0}h ago", "{0}시간 전 갱신"), ago / 3600);
     }
 
     private void QuitAll(object sender, EventArgs e)
