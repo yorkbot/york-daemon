@@ -1536,6 +1536,67 @@ class ClaudeBotTray : Form
         controlPanel.ResumeLayout(true);
     }
 
+    private bool RefreshOAuthToken(string credPath, string credJson)
+    {
+        try
+        {
+            var refreshMatch = Regex.Match(credJson, "\"refreshToken\"\\s*:\\s*\"([^\"]+)\"");
+            if (!refreshMatch.Success) return false;
+            string refreshToken = refreshMatch.Groups[1].Value;
+
+            string postData = "grant_type=refresh_token"
+                + "&refresh_token=" + Uri.EscapeDataString(refreshToken)
+                + "&client_id=" + Uri.EscapeDataString("9d1c250a-e61b-44d9-88ed-5944d1962f5e")
+                + "&scope=" + Uri.EscapeDataString("user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload");
+
+            var request = (HttpWebRequest)WebRequest.Create("https://platform.claude.com/v1/oauth/token");
+            request.Method = "POST";
+            request.Timeout = 15000;
+            request.ContentType = "application/x-www-form-urlencoded";
+            byte[] data = System.Text.Encoding.UTF8.GetBytes(postData);
+            request.ContentLength = data.Length;
+            using (var stream = request.GetRequestStream())
+                stream.Write(data, 0, data.Length);
+
+            using (var response = (HttpWebResponse)request.GetResponse())
+            using (var reader = new StreamReader(response.GetResponseStream()))
+            {
+                string json = reader.ReadToEnd();
+
+                var newAccessMatch = Regex.Match(json, "\"access_token\"\\s*:\\s*\"([^\"]+)\"");
+                var newRefreshMatch = Regex.Match(json, "\"refresh_token\"\\s*:\\s*\"([^\"]+)\"");
+                var expiresInMatch = Regex.Match(json, "\"expires_in\"\\s*:\\s*(\\d+)");
+                if (!newAccessMatch.Success) return false;
+
+                string newAccess = newAccessMatch.Groups[1].Value;
+                string newRefresh = newRefreshMatch.Success ? newRefreshMatch.Groups[1].Value : refreshToken;
+                long newExpiresAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + (expiresInMatch.Success ? long.Parse(expiresInMatch.Groups[1].Value) * 1000 : 3600000);
+
+                // Update credentials.json
+                string updated = credJson;
+                updated = Regex.Replace(updated, "\"accessToken\"\\s*:\\s*\"[^\"]+\"", "\"accessToken\":\"" + newAccess + "\"");
+                updated = Regex.Replace(updated, "\"refreshToken\"\\s*:\\s*\"[^\"]+\"", "\"refreshToken\":\"" + newRefresh + "\"");
+                updated = Regex.Replace(updated, "\"expiresAt\"\\s*:\\s*\\d+", "\"expiresAt\":" + newExpiresAt);
+                File.WriteAllText(credPath, updated);
+                return true;
+            }
+        }
+        catch (Exception ex)
+        {
+            try { File.AppendAllText(Path.Combine(botDir, "usage-error.log"), DateTime.Now + ": OAuth refresh failed: " + ex.Message + "\n"); } catch { }
+            return false;
+        }
+    }
+
+    private bool IsTokenExpired(string credJson)
+    {
+        var expiresMatch = Regex.Match(credJson, "\"expiresAt\"\\s*:\\s*(\\d+)");
+        if (!expiresMatch.Success) return false;
+        long expiresAt = long.Parse(expiresMatch.Groups[1].Value);
+        long nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        return nowMs >= (expiresAt - 300000); // 5분 여유
+    }
+
     private void FetchUsage(bool openPageOnFail = false)
     {
         bool success = false;
@@ -1544,29 +1605,47 @@ class ClaudeBotTray : Form
             ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12 | SecurityProtocolType.Tls13;
             string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
             string credPath = Path.Combine(home, ".claude", ".credentials.json");
-            try { File.AppendAllText(Path.Combine(botDir, "usage-debug.log"), DateTime.Now + ": home=" + home + " credPath=" + credPath + " exists=" + File.Exists(credPath) + "\n"); } catch { }
             if (!File.Exists(credPath)) { if (openPageOnFail) Process.Start("https://claude.ai/settings/usage"); return; }
 
             string credJson = File.ReadAllText(credPath);
+
+            // 토큰 만료 시 자동 갱신
+            if (IsTokenExpired(credJson))
+            {
+                if (RefreshOAuthToken(credPath, credJson))
+                    credJson = File.ReadAllText(credPath);
+            }
+
             var tokenMatch = Regex.Match(credJson, "\"accessToken\"\\s*:\\s*\"([^\"]+)\"");
             if (!tokenMatch.Success) { if (openPageOnFail) Process.Start("https://claude.ai/settings/usage"); return; }
             string token = tokenMatch.Groups[1].Value;
 
-            var request = (HttpWebRequest)WebRequest.Create("https://api.anthropic.com/api/oauth/usage");
-            request.Method = "GET";
-            request.Timeout = 10000;
-            request.Headers.Add("Authorization", "Bearer " + token);
-            request.Headers.Add("anthropic-beta", "oauth-2025-04-20");
-
-            using (var response = (HttpWebResponse)request.GetResponse())
-            using (var reader = new StreamReader(response.GetResponseStream()))
+            string usageJson = null;
+            try
             {
-                string json = reader.ReadToEnd();
-                ParseUsageJson(json);
-                usageLastFetched = DateTime.Now;
-                SaveUsageCache(json);
-                success = true;
+                usageJson = FetchUsageApi(token);
             }
+            catch (WebException wex)
+            {
+                var httpResp = wex.Response as HttpWebResponse;
+                if (httpResp != null && (httpResp.StatusCode == HttpStatusCode.Unauthorized || (int)httpResp.StatusCode == 429))
+                {
+                    // 401/429 → 토큰 갱신 후 재시도
+                    if (RefreshOAuthToken(credPath, credJson))
+                    {
+                        credJson = File.ReadAllText(credPath);
+                        tokenMatch = Regex.Match(credJson, "\"accessToken\"\\s*:\\s*\"([^\"]+)\"");
+                        if (tokenMatch.Success)
+                            usageJson = FetchUsageApi(tokenMatch.Groups[1].Value);
+                    }
+                }
+                if (usageJson == null) throw;
+            }
+
+            ParseUsageJson(usageJson);
+            usageLastFetched = DateTime.Now;
+            SaveUsageCache(usageJson);
+            success = true;
 
             // Refresh panel if open
             if (controlPanel != null && !controlPanel.IsDisposed)
@@ -1582,6 +1661,19 @@ class ClaudeBotTray : Form
             try { File.AppendAllText(Path.Combine(botDir, "usage-error.log"), DateTime.Now + ": " + ex.Message + "\n"); } catch { }
             if (openPageOnFail) Process.Start("https://claude.ai/settings/usage");
         }
+    }
+
+    private string FetchUsageApi(string token)
+    {
+        var request = (HttpWebRequest)WebRequest.Create("https://api.anthropic.com/api/oauth/usage");
+        request.Method = "GET";
+        request.Timeout = 10000;
+        request.Headers.Add("Authorization", "Bearer " + token);
+        request.Headers.Add("anthropic-beta", "oauth-2025-04-20");
+
+        using (var response = (HttpWebResponse)request.GetResponse())
+        using (var reader = new StreamReader(response.GetResponseStream()))
+            return reader.ReadToEnd();
     }
 
     private void ParseUsageJson(string json)
