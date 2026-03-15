@@ -283,6 +283,7 @@ def perform_update(icon, item):
 
     subprocess.run(["git", "pull", "origin", "main", "--tags"], cwd=BOT_DIR)
     subprocess.run(["npm", "install"], cwd=BOT_DIR)
+    subprocess.run(["npm", "rebuild", "better-sqlite3"], cwd=BOT_DIR)
     subprocess.run(["npm", "run", "build"], cwd=BOT_DIR)
 
     # Regenerate systemd service file (node path may change)
