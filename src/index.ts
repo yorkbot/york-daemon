@@ -4,6 +4,7 @@ import path from "node:path";
 import { loadConfig } from "./utils/config.js";
 import { initDatabase } from "./db/database.js";
 import { startBot } from "./bot/client.js";
+import { startScheduler, stopScheduler } from "./scheduler.js";
 
 const LOCK_FILE = path.join(process.cwd(), ".bot.lock");
 
@@ -43,8 +44,8 @@ async function main() {
 
   // Clean up lock file on exit
   process.on("exit", releaseLock);
-  process.on("SIGINT", () => { releaseLock(); process.exit(0); });
-  process.on("SIGTERM", () => { releaseLock(); process.exit(0); });
+  process.on("SIGINT", () => { stopScheduler(); releaseLock(); process.exit(0); });
+  process.on("SIGTERM", () => { stopScheduler(); releaseLock(); process.exit(0); });
 
   // Global error handlers — prevent silent hangs from unhandled errors
   process.on("unhandledRejection", (reason) => {
@@ -66,8 +67,12 @@ async function main() {
   console.log("Database initialized");
 
   // Start Discord bot
-  await startBot();
+  const client = await startBot();
   console.log("Bot is running!");
+
+  // Start cron scheduler
+  startScheduler(client);
+  console.log("Scheduler is running!");
 }
 
 main().catch((error) => {

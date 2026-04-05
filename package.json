@@ -1,7 +1,7 @@
 {
-  "name": "claude-code-discord-controller",
-  "version": "1.2.3",
-  "description": "Control multiple Claude Code sessions from Discord (mobile-friendly)",
+  "name": "york-daemon",
+  "version": "1.0.0",
+  "description": "York agent system daemon — Discord interface, cron scheduler, session management",
   "type": "module",
   "main": "dist/index.js",
   "scripts": {

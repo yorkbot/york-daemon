@@ -58,6 +58,7 @@ class SessionManager {
   async sendMessage(
     channel: TextChannel,
     prompt: string,
+    modelOverride?: string,
   ): Promise<void> {
     const channelId = channel.id;
     const project = getProject(channelId);
@@ -107,11 +108,15 @@ class SessionManager {
     }, 15_000);
 
     try {
+      // Determine model: explicit override > project setting > default
+      const model = modelOverride ?? project.model ?? undefined;
+
       const queryInstance = query({
         prompt,
         options: {
           cwd: project.project_path,
           permissionMode: "default",
+          ...(model ? { model } : {}),
           env: { ...process.env, ANTHROPIC_API_KEY: undefined, PATH: `${path.dirname(process.execPath)}:${process.env.PATH ?? ""}` },
           ...(resumeSessionId ? { resume: resumeSessionId } : {}),
 
