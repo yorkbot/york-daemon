@@ -24,6 +24,7 @@ export interface ScheduledJob {
   cron_expression: string;
   prompt: string;
   enabled: number; // 0 or 1
+  one_shot: number; // 0 = recurring, 1 = fire once then auto-disable
   model_override: string | null;
   last_run: string | null;
   created_at: string;

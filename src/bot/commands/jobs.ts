@@ -47,10 +47,11 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
 
     const lines = jobs.map((j) => {
       const status = j.enabled ? "✅" : "⏸️";
+      const type = j.one_shot ? " 🔂" : "";
       const model = j.model_override ? ` [${j.model_override}]` : "";
       const lastRun = j.last_run ? ` (last: ${j.last_run})` : "";
       const prompt = j.prompt.length > 60 ? j.prompt.slice(0, 60) + "…" : j.prompt;
-      return `${status} **#${j.id}** \`${j.cron_expression}\`${model} — ${prompt}${lastRun}`;
+      return `${status}${type} **#${j.id}** \`${j.cron_expression}\`${model} — ${prompt}${lastRun}`;
     });
 
     await interaction.editReply(lines.join("\n"));

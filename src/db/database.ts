@@ -48,6 +48,13 @@ export function initDatabase(): void {
   } catch {
     // Column already exists
   }
+
+  // Migration: add one_shot column to scheduled_jobs
+  try {
+    db.exec("ALTER TABLE scheduled_jobs ADD COLUMN one_shot INTEGER DEFAULT 0");
+  } catch {
+    // Column already exists
+  }
 }
 
 export function getDb(): Database.Database {
@@ -151,12 +158,13 @@ export function createScheduledJob(
   cronExpression: string,
   prompt: string,
   modelOverride?: string,
+  oneShot?: boolean,
 ): ScheduledJob {
   const stmt = db.prepare(`
-    INSERT INTO scheduled_jobs (channel_id, cron_expression, prompt, model_override)
-    VALUES (?, ?, ?, ?)
+    INSERT INTO scheduled_jobs (channel_id, cron_expression, prompt, model_override, one_shot)
+    VALUES (?, ?, ?, ?, ?)
   `);
-  const result = stmt.run(channelId, cronExpression, prompt, modelOverride ?? null);
+  const result = stmt.run(channelId, cronExpression, prompt, modelOverride ?? null, oneShot ? 1 : 0);
   return db.prepare("SELECT * FROM scheduled_jobs WHERE id = ?").get(result.lastInsertRowid) as ScheduledJob;
 }
 

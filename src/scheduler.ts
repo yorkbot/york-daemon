@@ -1,5 +1,5 @@
 import type { Client, TextChannel } from "discord.js";
-import { getAllEnabledJobs, updateJobLastRun } from "./db/database.js";
+import { getAllEnabledJobs, updateJobLastRun, toggleScheduledJob } from "./db/database.js";
 import { sessionManager } from "./claude/session-manager.js";
 
 /**
@@ -51,14 +51,27 @@ async function checkJobs(): Promise<void> {
           return;
         }
 
-        // Don't run if session is already active
+        // If session is active, queue the job instead of skipping
         if (sessionManager.isActive(job.channel_id)) {
-          console.log(`[scheduler] Skipping job #${job.id} — session already active in channel`);
+          console.log(`[scheduler] Queuing job #${job.id} — session active in channel`);
+          updateJobLastRun(job.id);
+          if (job.one_shot) {
+            toggleScheduledJob(job.id, false);
+            console.log(`[scheduler] One-shot job #${job.id} disabled after queuing`);
+          }
+          sessionManager.setPendingQueue(job.channel_id, channel as TextChannel, job.prompt);
+          sessionManager.confirmQueue(job.channel_id);
           return;
         }
 
         console.log(`[scheduler] Running job #${job.id}: ${job.prompt.slice(0, 50)}...`);
         updateJobLastRun(job.id);
+
+        // Auto-disable one-shot jobs after firing
+        if (job.one_shot) {
+          toggleScheduledJob(job.id, false);
+          console.log(`[scheduler] One-shot job #${job.id} disabled after firing`);
+        }
 
         await (channel as TextChannel).send(`⏰ **Scheduled job #${job.id}** running...`);
         await sessionManager.sendMessage(

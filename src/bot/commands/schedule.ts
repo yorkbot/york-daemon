@@ -29,6 +29,12 @@ export const data = new SlashCommandBuilder()
         { name: "Opus", value: "opus" },
         { name: "Sonnet", value: "sonnet" },
       ),
+  )
+  .addBooleanOption((option) =>
+    option
+      .setName("once")
+      .setDescription("Run once then auto-disable (default: false)")
+      .setRequired(false),
   );
 
 export async function execute(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -45,6 +51,7 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
   const cron = interaction.options.getString("cron", true);
   const prompt = interaction.options.getString("prompt", true);
   const model = interaction.options.getString("model") ?? undefined;
+  const once = interaction.options.getBoolean("once") ?? false;
 
   // Basic cron validation (5 fields)
   const cronParts = cron.trim().split(/\s+/);
@@ -55,14 +62,15 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
     return;
   }
 
-  const job = createScheduledJob(channelId, cron, prompt, model);
+  const job = createScheduledJob(channelId, cron, prompt, model, once);
+  const typeLabel = once ? " (one-shot)" : "";
   await interaction.editReply(
     L(
-      `Scheduled job **#${job.id}** created.\n` +
+      `Scheduled job **#${job.id}**${typeLabel} created.\n` +
       `**Cron:** \`${cron}\`\n` +
       `**Prompt:** ${prompt.length > 100 ? prompt.slice(0, 100) + "…" : prompt}\n` +
       (model ? `**Model:** ${model}` : ""),
-      `예약 작업 **#${job.id}** 생성됨.`,
+      `예약 작업 **#${job.id}**${typeLabel} 생성됨.`,
     ),
   );
 }
