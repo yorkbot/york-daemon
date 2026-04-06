@@ -9,6 +9,7 @@ import { sessionManager } from "./claude/session-manager.js";
 
 let schedulerInterval: ReturnType<typeof setInterval> | null = null;
 let discordClient: Client | null = null;
+let tickCount = 0;
 
 export function startScheduler(client: Client): void {
   discordClient = client;
@@ -34,7 +35,13 @@ export function stopScheduler(): void {
 async function checkJobs(): Promise<void> {
   if (!discordClient) return;
 
+  tickCount++;
   const now = new Date();
+  // Log every 60 ticks (~1 hour) as heartbeat
+  if (tickCount % 60 === 0) {
+    console.log(`[scheduler] Heartbeat: tick #${tickCount} at ${now.toISOString()}`);
+  }
+
   const jobs = getAllEnabledJobs();
 
   for (const job of jobs) {
