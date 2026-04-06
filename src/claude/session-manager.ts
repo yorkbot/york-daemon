@@ -505,7 +505,7 @@ class SessionManager {
 
       const sessionPromise = (async () => {
         for await (const message of queryInstance!) {
-          // Accumulate text
+          // Accumulate text from streaming assistant messages
           if (message.type === "assistant" && "content" in message) {
             const content = message.content;
             if (Array.isArray(content)) {
@@ -517,7 +517,24 @@ class SessionManager {
             }
           }
 
+          // Also check the assistant message.message field (SDK sometimes puts text there)
+          if (message.type === "assistant" && "message" in message) {
+            const msg = message as { message?: { content?: Array<{ type: string; text?: string }> } };
+            if (msg.message?.content) {
+              for (const block of msg.message.content) {
+                if (block.type === "text" && block.text) {
+                  responseBuffer += block.text;
+                }
+              }
+            }
+          }
+
+          // Capture result — the final response text lives here
           if ("result" in message) {
+            const resultMsg = message as { result?: string };
+            if (resultMsg.result && responseBuffer.length === 0) {
+              responseBuffer = resultMsg.result;
+            }
             break;
           }
         }
