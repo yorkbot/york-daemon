@@ -464,53 +464,38 @@ class SessionManager {
     const project = getProject(channelId);
     if (!project) throw new Error("No project registered for this channel");
 
-    if (this.sessions.has(channelId)) {
-      throw new Error("Session already active on this channel");
-    }
-
-    const dbSession = getSession(channelId);
-    const dbId = dbSession?.id ?? randomUUID();
-    const resumeSessionId = dbSession?.session_id ?? undefined;
-
-    upsertSession(dbId, channelId, resumeSessionId ?? null, "online");
+    // Headless sessions are independent — they don't conflict with Discord sessions,
+    // don't resume existing conversations, and don't track in this.sessions.
+    // They're tool calls: run, get result, return.
 
     const startTime = Date.now();
     let responseBuffer = "";
+    let queryInstance: Query | null = null;
 
     try {
       const model = modelOverride ?? project.model ?? undefined;
 
-      const queryInstance = query({
+      queryInstance = query({
         prompt,
         options: {
           cwd: project.project_path,
           permissionMode: "default",
           ...(model ? { model } : {}),
           env: { ...process.env, ANTHROPIC_API_KEY: undefined, PATH: `${path.dirname(process.execPath)}:${process.env.PATH ?? ""}` },
-          ...(resumeSessionId ? { resume: resumeSessionId } : {}),
-
+          // Never resume — headless calls are standalone
           canUseTool: async (
             toolName: string,
             input: Record<string, unknown>,
           ) => {
-            // Auto-deny AskUserQuestion in headless mode
             if (toolName === "AskUserQuestion") {
               return {
                 behavior: "deny" as const,
                 message: "Running in headless mode — cannot ask user",
               };
             }
-            // Auto-approve everything else
             return { behavior: "allow" as const, updatedInput: input };
           },
         },
-      });
-
-      this.sessions.set(channelId, {
-        queryInstance,
-        channelId,
-        sessionId: resumeSessionId ?? null,
-        dbId,
       });
 
       // Set up timeout
@@ -519,21 +504,7 @@ class SessionManager {
       });
 
       const sessionPromise = (async () => {
-        for await (const message of queryInstance) {
-          // Capture session ID
-          if (
-            message.type === "system" &&
-            "subtype" in message &&
-            message.subtype === "init"
-          ) {
-            const sdkSessionId = (message as { session_id?: string }).session_id;
-            if (sdkSessionId) {
-              const active = this.sessions.get(channelId);
-              if (active) active.sessionId = sdkSessionId;
-              upsertSession(dbId, channelId, sdkSessionId, "online");
-            }
-          }
-
+        for await (const message of queryInstance!) {
           // Accumulate text
           if (message.type === "assistant" && "content" in message) {
             const content = message.content;
@@ -546,7 +517,6 @@ class SessionManager {
             }
           }
 
-          // Done
           if ("result" in message) {
             break;
           }
@@ -556,22 +526,16 @@ class SessionManager {
       })();
 
       const result = await Promise.race([sessionPromise, timeoutPromise]);
-
-      updateSessionStatus(channelId, "idle");
       return { response: result, durationMs: Date.now() - startTime };
     } catch (error) {
-      updateSessionStatus(channelId, "offline");
-      // If we got partial response before timeout, return it
       if (responseBuffer.length > 0 && error instanceof Error && error.message.includes("timed out")) {
         return { response: responseBuffer, durationMs: Date.now() - startTime };
       }
       throw error;
     } finally {
-      const session = this.sessions.get(channelId);
-      if (session) {
-        try { await session.queryInstance.interrupt(); } catch { /* already done */ }
+      if (queryInstance) {
+        try { await queryInstance.interrupt(); } catch { /* already done */ }
       }
-      this.sessions.delete(channelId);
     }
   }
 

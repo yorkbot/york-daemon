@@ -52,11 +52,6 @@ async function handleAsk(
     return;
   }
 
-  if (sessionManager.isActive(project.channel_id)) {
-    jsonResponse(res, 409, { ok: false, error: `Agent "${agent}" has an active session` });
-    return;
-  }
-
   try {
     console.log(`[api] /ask: Sending prompt to ${agent} (timeout: ${timeout}s)`);
     const result = await sessionManager.sendMessageHeadless(
