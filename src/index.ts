@@ -5,6 +5,7 @@ import { loadConfig } from "./utils/config.js";
 import { initDatabase } from "./db/database.js";
 import { startBot } from "./bot/client.js";
 import { startScheduler, stopScheduler } from "./scheduler.js";
+import { startApiServer, stopApiServer } from "./api/server.js";
 
 const LOCK_FILE = path.join(process.cwd(), ".bot.lock");
 
@@ -44,8 +45,8 @@ async function main() {
 
   // Clean up lock file on exit
   process.on("exit", releaseLock);
-  process.on("SIGINT", () => { stopScheduler(); releaseLock(); process.exit(0); });
-  process.on("SIGTERM", () => { stopScheduler(); releaseLock(); process.exit(0); });
+  process.on("SIGINT", () => { stopApiServer(); stopScheduler(); releaseLock(); process.exit(0); });
+  process.on("SIGTERM", () => { stopApiServer(); stopScheduler(); releaseLock(); process.exit(0); });
 
   // Global error handlers — prevent silent hangs from unhandled errors
   process.on("unhandledRejection", (reason) => {
@@ -73,6 +74,10 @@ async function main() {
   // Start cron scheduler
   startScheduler(client);
   console.log("Scheduler is running!");
+
+  // Start inter-agent API server
+  await startApiServer(client);
+  console.log("API server is running!");
 }
 
 main().catch((error) => {

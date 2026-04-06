@@ -455,6 +455,126 @@ class SessionManager {
     }
   }
 
+  async sendMessageHeadless(
+    channelId: string,
+    prompt: string,
+    timeoutSec: number = 120,
+    modelOverride?: string,
+  ): Promise<{ response: string; durationMs: number }> {
+    const project = getProject(channelId);
+    if (!project) throw new Error("No project registered for this channel");
+
+    if (this.sessions.has(channelId)) {
+      throw new Error("Session already active on this channel");
+    }
+
+    const dbSession = getSession(channelId);
+    const dbId = dbSession?.id ?? randomUUID();
+    const resumeSessionId = dbSession?.session_id ?? undefined;
+
+    upsertSession(dbId, channelId, resumeSessionId ?? null, "online");
+
+    const startTime = Date.now();
+    let responseBuffer = "";
+
+    try {
+      const model = modelOverride ?? project.model ?? undefined;
+
+      const queryInstance = query({
+        prompt,
+        options: {
+          cwd: project.project_path,
+          permissionMode: "default",
+          ...(model ? { model } : {}),
+          env: { ...process.env, ANTHROPIC_API_KEY: undefined, PATH: `${path.dirname(process.execPath)}:${process.env.PATH ?? ""}` },
+          ...(resumeSessionId ? { resume: resumeSessionId } : {}),
+
+          canUseTool: async (
+            toolName: string,
+            input: Record<string, unknown>,
+          ) => {
+            // Auto-deny AskUserQuestion in headless mode
+            if (toolName === "AskUserQuestion") {
+              return {
+                behavior: "deny" as const,
+                message: "Running in headless mode — cannot ask user",
+              };
+            }
+            // Auto-approve everything else
+            return { behavior: "allow" as const, updatedInput: input };
+          },
+        },
+      });
+
+      this.sessions.set(channelId, {
+        queryInstance,
+        channelId,
+        sessionId: resumeSessionId ?? null,
+        dbId,
+      });
+
+      // Set up timeout
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error("Headless session timed out")), timeoutSec * 1000);
+      });
+
+      const sessionPromise = (async () => {
+        for await (const message of queryInstance) {
+          // Capture session ID
+          if (
+            message.type === "system" &&
+            "subtype" in message &&
+            message.subtype === "init"
+          ) {
+            const sdkSessionId = (message as { session_id?: string }).session_id;
+            if (sdkSessionId) {
+              const active = this.sessions.get(channelId);
+              if (active) active.sessionId = sdkSessionId;
+              upsertSession(dbId, channelId, sdkSessionId, "online");
+            }
+          }
+
+          // Accumulate text
+          if (message.type === "assistant" && "content" in message) {
+            const content = message.content;
+            if (Array.isArray(content)) {
+              for (const block of content) {
+                if ("text" in block && typeof block.text === "string") {
+                  responseBuffer += block.text;
+                }
+              }
+            }
+          }
+
+          // Done
+          if ("result" in message) {
+            break;
+          }
+        }
+
+        return responseBuffer;
+      })();
+
+      const result = await Promise.race([sessionPromise, timeoutPromise]);
+
+      updateSessionStatus(channelId, "idle");
+      return { response: result, durationMs: Date.now() - startTime };
+    } catch (error) {
+      updateSessionStatus(channelId, "offline");
+      // If we got partial response before timeout, return it
+      if (responseBuffer.length > 0 && error instanceof Error && error.message.includes("timed out")) {
+        return { response: responseBuffer, durationMs: Date.now() - startTime };
+      }
+      throw error;
+    } finally {
+      const session = this.sessions.get(channelId);
+      if (session) {
+        try { await session.queryInstance.interrupt(); } catch { /* already done */ }
+      }
+      this.sessions.delete(channelId);
+    }
+  }
+
   async stopSession(channelId: string): Promise<boolean> {
     const session = this.sessions.get(channelId);
     if (!session) return false;

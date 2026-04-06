@@ -196,3 +196,10 @@ export function toggleScheduledJob(id: number, enabled: boolean): boolean {
   const result = db.prepare("UPDATE scheduled_jobs SET enabled = ? WHERE id = ?").run(enabled ? 1 : 0, id);
   return result.changes > 0;
 }
+
+// Agent lookup by name (for inter-agent routing)
+export function getProjectByAgentName(agentName: string): Project | undefined {
+  return db
+    .prepare("SELECT * FROM projects WHERE project_path LIKE ?")
+    .get(`%/${agentName}`) as Project | undefined;
+}
