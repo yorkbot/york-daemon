@@ -59,15 +59,14 @@ class SessionManager {
     channel: TextChannel,
     prompt: string,
     modelOverride?: string,
-    freshSession?: boolean,
   ): Promise<void> {
     const channelId = channel.id;
     const project = getProject(channelId);
     if (!project) return;
 
-    const existingSession = freshSession ? undefined : this.sessions.get(channelId);
+    const existingSession = this.sessions.get(channelId);
     // If no in-memory session, check DB for previous session_id (for bot restart resume)
-    const dbSession = !existingSession && !freshSession ? getSession(channelId) : undefined;
+    const dbSession = !existingSession ? getSession(channelId) : undefined;
     const dbId = existingSession?.dbId ?? dbSession?.id ?? randomUUID();
     const resumeSessionId = existingSession?.sessionId ?? dbSession?.session_id ?? undefined;
 
@@ -76,32 +75,13 @@ class SessionManager {
 
     // Streaming state
     let responseBuffer = "";
+    let lastEditTime = 0;
     const stopRow = createStopButton(channelId);
-    const EDIT_INTERVAL = 1500; // ms between edits (Discord rate limit friendly)
-
-    // Resolve status channel — progress/embeds go here, conversation stays clean
-    const config = getConfig();
-    let statusChannel: TextChannel | null = null;
-    if (config.STATUS_CHANNEL_ID) {
-      try {
-        const ch = await channel.client.channels.fetch(config.STATUS_CHANNEL_ID);
-        if (ch?.isTextBased()) statusChannel = ch as TextChannel;
-      } catch { /* fallback: no status channel, progress stays in agent channel */ }
-    }
-    const agentName = project.project_path.split("/").pop() ?? "unknown";
-    const statusTarget = statusChannel ?? channel;
-    const hasStatusChannel = statusChannel !== null;
-
-    // Status message for progress — goes to status channel (or agent channel as fallback)
-    let statusMessage = await statusTarget.send({
-      content: hasStatusChannel
-        ? `⏳ **${agentName}** — ${L("Thinking...", "생각 중...")}`
-        : L("⏳ Thinking...", "⏳ 생각 중..."),
+    let currentMessage = await channel.send({
+      content: L("⏳ Thinking...", "⏳ 생각 중..."),
       components: [stopRow],
     });
-    // When streaming to agent channel (no status channel), we edit this message with text
-    let currentMessage = hasStatusChannel ? null : statusMessage;
-    let lastEditTime = 0;
+    const EDIT_INTERVAL = 1500; // ms between edits (Discord rate limit friendly)
 
     // Activity tracking for progress display
     const startTime = Date.now();
@@ -118,10 +98,8 @@ class SessionManager {
       const secs = elapsed % 60;
       const timeStr = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
       try {
-        await statusMessage.edit({
-          content: hasStatusChannel
-            ? `⏳ **${agentName}** — ${lastActivity} (${timeStr})`
-            : `⏳ ${lastActivity} (${timeStr})`,
+        await currentMessage.edit({
+          content: `⏳ ${lastActivity} (${timeStr})`,
           components: [stopRow],
         });
       } catch (e) {
@@ -172,11 +150,8 @@ class SessionManager {
                 ? `${Math.floor(elapsed / 60)}m ${elapsed % 60}s`
                 : `${elapsed}s`;
               try {
-                const statusContent = hasStatusChannel
-                  ? `⏳ **${agentName}** — ${lastActivity} (${timeStr}) [${toolUseCount} tools used]`
-                  : `⏳ ${lastActivity} (${timeStr}) [${toolUseCount} tools used]`;
-                await statusMessage.edit({
-                  content: statusContent,
+                await currentMessage.edit({
+                  content: `⏳ ${lastActivity} (${timeStr}) [${toolUseCount} tools used]`,
                   components: [stopRow],
                 });
               } catch (e) {
@@ -320,39 +295,37 @@ class SessionManager {
           }
         }
 
-        // Handle streaming text (filter out thinking blocks)
+        // Handle streaming text
         if (message.type === "assistant" && "content" in message) {
           const content = message.content;
           if (Array.isArray(content)) {
             for (const block of content) {
-              if ((block as any).type === "text" && "text" in block && typeof block.text === "string") {
+              if ("text" in block && typeof block.text === "string") {
                 responseBuffer += block.text;
                 hasTextOutput = true;
               }
             }
           }
 
-          // When no status channel, stream text to agent channel (legacy behavior)
-          if (!hasStatusChannel && currentMessage) {
-            const now = Date.now();
-            if (now - lastEditTime >= EDIT_INTERVAL && responseBuffer.length > 0) {
-              lastEditTime = now;
-              const chunks = splitMessage(responseBuffer);
-              try {
-                await currentMessage.edit({ content: chunks[0] || "...", components: [] });
-                for (let i = 1; i < chunks.length; i++) {
-                  currentMessage = await channel.send(chunks[i]);
-                  responseBuffer = chunks.slice(i + 1).join("");
-                }
-              } catch (e) {
-                console.warn(`[stream] Failed to edit message for ${channelId}, sending new:`, e instanceof Error ? e.message : e);
-                currentMessage = await channel.send(
-                  chunks[chunks.length - 1] || "...",
-                );
+          // Throttled message edit
+          const now = Date.now();
+          if (now - lastEditTime >= EDIT_INTERVAL && responseBuffer.length > 0) {
+            lastEditTime = now;
+            const chunks = splitMessage(responseBuffer);
+            try {
+              await currentMessage.edit({ content: chunks[0] || "...", components: [] });
+              // Send additional chunks as new messages
+              for (let i = 1; i < chunks.length; i++) {
+                currentMessage = await channel.send(chunks[i]);
+                responseBuffer = chunks.slice(i + 1).join("");
               }
+            } catch (e) {
+              console.warn(`[stream] Failed to edit message for ${channelId}, sending new:`, e instanceof Error ? e.message : e);
+              currentMessage = await channel.send(
+                chunks[chunks.length - 1] || "...",
+              );
             }
           }
-          // When status channel exists, just buffer — text goes to agent channel on completion
         }
 
         // Handle result
@@ -363,92 +336,37 @@ class SessionManager {
             duration_ms?: number;
           };
 
-          const resultText = resultMsg.result ?? L("Task completed", "작업 완료");
-
-          if (hasStatusChannel) {
-            // === Status channel mode: clean conversation flow ===
-
-            // Send agent's response as clean message(s) to agent channel
-            // Use responseBuffer (streamed text) if available, fall back to resultText
-            const finalText = responseBuffer.length > 0 ? responseBuffer : resultText;
-            if (finalText.length > 0) {
-              const chunks = splitMessage(finalText);
-              for (const chunk of chunks) {
-                await channel.send(chunk);
-              }
-            }
-
-            // Update status message with completed state
-            const elapsed = Math.round((Date.now() - startTime) / 1000);
-            const timeStr = elapsed > 60
-              ? `${Math.floor(elapsed / 60)}m ${elapsed % 60}s`
-              : `${elapsed}s`;
+          // Flush remaining buffer
+          if (responseBuffer.length > 0) {
+            const chunks = splitMessage(responseBuffer);
             try {
-              const resultEmbed = createResultEmbed(
-                resultText,
-                resultMsg.total_cost_usd ?? 0,
-                resultMsg.duration_ms ?? 0,
-                getConfig().SHOW_COST,
-              );
-              await statusMessage.edit({
-                content: `✅ **${agentName}** — done (${timeStr})`,
-                embeds: [resultEmbed],
-                components: [createCompletedButton()],
-              });
+              await currentMessage.edit(chunks[0] || L("Done.", "완료."));
+              for (let i = 1; i < chunks.length; i++) {
+                await channel.send(chunks[i]);
+              }
             } catch (e) {
-              console.warn(`[status] Failed to update status message for ${channelId}:`, e instanceof Error ? e.message : e);
+              console.warn(`[flush] Failed to edit final message for ${channelId}:`, e instanceof Error ? e.message : e);
             }
-
-            // Send mentions as plain content in agent channel for push notifications
-            const mentionMatch = resultText.match(/<@\d+>/g);
-            if (mentionMatch) {
-              // Mentions were already in the response buffer sent above;
-              // but if result text has mentions not in the streamed text, send them
-              const bufferHasMentions = mentionMatch.every(m => responseBuffer.includes(m));
-              if (!bufferHasMentions) {
-                await channel.send(mentionMatch.join(" "));
-              }
-            }
-          } else {
-            // === Legacy mode: no status channel ===
-
-            // Flush remaining buffer
-            if (responseBuffer.length > 0 && currentMessage) {
-              const chunks = splitMessage(responseBuffer);
-              try {
-                await currentMessage.edit(chunks[0] || L("Done.", "완료."));
-                for (let i = 1; i < chunks.length; i++) {
-                  await channel.send(chunks[i]);
-                }
-              } catch (e) {
-                console.warn(`[flush] Failed to edit final message for ${channelId}:`, e instanceof Error ? e.message : e);
-              }
-            }
-
-            // Replace stop button with completed button
-            if (currentMessage) {
-              try {
-                await currentMessage.edit({
-                  components: [createCompletedButton()],
-                });
-              } catch (e) {
-                console.warn(`[complete] Failed to update completed button for ${channelId}:`, e instanceof Error ? e.message : e);
-              }
-            }
-
-            // Send result embed
-            const resultEmbed = createResultEmbed(
-              resultText,
-              resultMsg.total_cost_usd ?? 0,
-              resultMsg.duration_ms ?? 0,
-              getConfig().SHOW_COST,
-            );
-            const mentionMatch = resultText.match(/<@\d+>/g);
-            await channel.send({
-              content: mentionMatch ? mentionMatch.join(" ") : undefined,
-              embeds: [resultEmbed],
-            });
           }
+
+          // Replace stop button with completed button
+          try {
+            await currentMessage.edit({
+              components: [createCompletedButton()],
+            });
+          } catch (e) {
+            console.warn(`[complete] Failed to update completed button for ${channelId}:`, e instanceof Error ? e.message : e);
+          }
+
+          // Send result embed
+          const resultText = resultMsg.result ?? L("Task completed", "작업 완료");
+          const resultEmbed = createResultEmbed(
+            resultText,
+            resultMsg.total_cost_usd ?? 0,
+            resultMsg.duration_ms ?? 0,
+            getConfig().SHOW_COST,
+          );
+          await channel.send({ embeds: [resultEmbed] });
 
           // Detect auth/credit errors in result and suggest re-login
           const resultAuthKeywords = ["credit balance", "not authenticated", "unauthorized", "authentication", "login required", "auth token", "expired", "not logged in", "please run /login"];
@@ -587,12 +505,12 @@ class SessionManager {
 
       const sessionPromise = (async () => {
         for await (const message of queryInstance!) {
-          // Accumulate text from streaming assistant messages (filter out thinking blocks)
+          // Accumulate text from streaming assistant messages
           if (message.type === "assistant" && "content" in message) {
             const content = message.content;
             if (Array.isArray(content)) {
               for (const block of content) {
-                if ((block as any).type === "text" && "text" in block && typeof block.text === "string") {
+                if ("text" in block && typeof block.text === "string") {
                   responseBuffer += block.text;
                 }
               }

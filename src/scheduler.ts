@@ -1,7 +1,6 @@
 import type { Client, TextChannel } from "discord.js";
 import { getAllEnabledJobs, updateJobLastRun, toggleScheduledJob } from "./db/database.js";
 import { sessionManager } from "./claude/session-manager.js";
-import { getConfig } from "./utils/config.js";
 
 /**
  * Simple cron scheduler that checks every 60 seconds for jobs that should run.
@@ -81,23 +80,11 @@ async function checkJobs(): Promise<void> {
           console.log(`[scheduler] One-shot job #${job.id} disabled after firing`);
         }
 
-        // Send "running" notice to status channel if available, otherwise agent channel
-        const cfg = getConfig();
-        if (cfg.STATUS_CHANNEL_ID) {
-          try {
-            const statusCh = await discordClient!.channels.fetch(cfg.STATUS_CHANNEL_ID);
-            if (statusCh?.isTextBased()) {
-              await (statusCh as TextChannel).send(`⏰ **Scheduled job #${job.id}** running...`);
-            }
-          } catch { /* fallback below */ }
-        } else {
-          await (channel as TextChannel).send(`⏰ **Scheduled job #${job.id}** running...`);
-        }
+        await (channel as TextChannel).send(`⏰ **Scheduled job #${job.id}** running...`);
         await sessionManager.sendMessage(
           channel as TextChannel,
           job.prompt,
           job.model_override ?? undefined,
-          true, // fresh session — cron jobs should not resume stale context
         );
       } catch (err) {
         console.error(`[scheduler] Failed to run job #${job.id}:`, err);
